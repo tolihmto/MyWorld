@@ -1,6 +1,10 @@
 #pragma once
 
 namespace cfg {
+    // Chunked world configuration
+    constexpr int CHUNK_SIZE = 60;           // tiles per chunk side (chunk grid is (CHUNK_SIZE+1)^2 vertices)
+    constexpr int MAX_CACHED_CHUNKS = 121;   // simple LRU budget (e.g., 11x11 visible)
+
     constexpr int GRID = 300;                // 300 tiles per side
     constexpr float TILE_W = 32.f;           // visual diamond width in pixels
     constexpr float TILE_H = 16.f;           // visual diamond height in pixels (smaller to yield diamond look)

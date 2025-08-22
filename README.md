@@ -66,11 +66,14 @@ make run
   - Clic droit: peindre pour **diminuer** l’élévation.
   - Drag droit (en dehors de l’édition) : rotation (X) et tilt (Y) de la projection.
 - **Clavier**
-  - `G`: générer un nouveau terrain aléatoire.
+  - `G`: bascule le **mode procédural** (seed aléatoire à l’activation, OFF = terrain plat).
   - `F2`: activer/désactiver les ombres.
   - `F3`: afficher/masquer la grille (wireframe).
   - `R`: réinitialiser la caméra/projection (45°, pitch 1) et recentrer.
   - `W/A/S/D` ou flèches: pan de la vue.
+  - `Z/Q/S/D` (AZERTY): alias de `W/A/S/D`.
+  - Bouton "Re-seed": tire un nouveau seed aléatoire quand le mode procédural est actif.
+  - Champ "Seed": cliquer puis saisir un entier, valider avec Entrée pour appliquer le seed.
 
 Note: Un mode "aplatissement" de la brosse est disponible dans le code (plat à une hauteur cible) et s’active depuis l’UI; il agit sur la zone circulaire de la brosse.
 
@@ -97,6 +100,17 @@ Format: chaque ligne du CSV contient `GRID+1` entiers séparés par `,`, bornés
   - Cache `map2d` avec invalidation sur édition/import/génération/changement d’iso.
   - Culling des boucles de remplissage/ombres via fenêtre d’indices dérivée de la vue.
   - Réutilisation de `sf::VertexArray` avec `reserve()` pour limiter les allocations.
+
+## Mode procédural par chunks (expérimental)
+
+- Le monde est découpé en **chunks 60x60** intersections (constante `cfg::CHUNK_SIZE`).
+- Génération procédurale déterministe via un **FBM de value-noise** (`src/noise.*`) avec **seed global**.
+- Les hauteurs sont échantillonnées en coordonnées monde (I,J), garantissant la **continuité aux frontières** de chunks.
+- Intégration actuelle (mode passerelle): chaque frame, une fenêtre `(GRID+1)^2` est **repeuplée** depuis les chunks autour du centre de la vue. Le renderer reste inchangé.
+- Cache de chunks avec une politique **LRU** simple, bornée par `cfg::MAX_CACHED_CHUNKS`.
+- UI: bouton **Générer** ou touche **G** basculent le mode procédural. Quand OFF, la carte redevient **plate** (hauteurs=0). Une UI de seed dédiée est prévue.
+  - Bouton **Re-seed** pour re-générer un seed aléatoire.
+  - Champ **Seed** éditable (Entrée pour valider) pour fixer un seed déterministe.
 
 ## Dépannage
 

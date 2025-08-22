@@ -18,6 +18,7 @@
 #include "iso.hpp"
 #include "terrain.hpp"
 #include "render.hpp"
+#include "chunks.hpp"
 
 // MyWorld - Isometric diamond tiles with elevation editing, camera pan+zoom
 // Grid: 20x20 tiles, each isometric tile nominal size 32x32 (diamond)
@@ -56,8 +57,12 @@ int main() {
     auto idx = [](int i, int j) { return i * (cfg::GRID + 1) + j; };
 
     // Terrain generation provided by terrain::generateMap
-
     auto generateMap = [&](uint32_t seed){ terrain::generateMap(heights, seed); };
+
+    // Chunked world manager (procedural mode)
+    ChunkManager chunkMgr;
+    bool proceduralMode = false;
+    uint32_t proceduralSeed = 0;
 
     
 
@@ -78,8 +83,35 @@ int main() {
     btnGrid.setOutlineThickness(2.f);
     btnGrid.setOutlineColor(sf::Color(200, 200, 200));
     btnGrid.setPosition(16.f, 16.f + 36.f + 8.f);
+    // Continents toggle, Re-seed button and Seed input box, Bake button
+    sf::RectangleShape btnContinents(sf::Vector2f(140.f, 36.f));
+    btnContinents.setFillColor(sf::Color(30, 30, 30, 200));
+    btnContinents.setOutlineThickness(2.f);
+    btnContinents.setOutlineColor(sf::Color(200, 200, 200));
+    btnContinents.setPosition(16.f, 16.f + (36.f + 8.f) * 2.f);
+    sf::RectangleShape btnReseed(sf::Vector2f(140.f, 36.f));
+    btnReseed.setFillColor(sf::Color(30, 30, 30, 200));
+    btnReseed.setOutlineThickness(2.f);
+    btnReseed.setOutlineColor(sf::Color(200, 200, 200));
+    btnReseed.setPosition(16.f, 16.f + (36.f + 8.f) * 3.f);
+
+    sf::RectangleShape seedBox(sf::Vector2f(140.f, 28.f));
+    seedBox.setFillColor(sf::Color(20, 20, 20, 200));
+    seedBox.setOutlineThickness(2.f);
+    seedBox.setOutlineColor(sf::Color(180, 180, 180));
+    seedBox.setPosition(16.f, 16.f + (36.f + 8.f) * 4.f);
+    sf::RectangleShape btnBake(sf::Vector2f(140.f, 36.f));
+    btnBake.setFillColor(sf::Color(30, 30, 30, 200));
+    btnBake.setOutlineThickness(2.f);
+    btnBake.setOutlineColor(sf::Color(200, 200, 200));
+    btnBake.setPosition(16.f, 16.f + (36.f + 8.f) * 5.f);
+
     sf::Text btnText;
     sf::Text btnGridText;
+    sf::Text btnContinentsText;
+    sf::Text btnReseedText;
+    sf::Text seedText;
+    sf::Text btnBakeText;
     // Persistent help and FPS texts (avoid realloc each frame)
     sf::Text helpF11;
     sf::Text helpCtrl;
@@ -118,12 +150,48 @@ int main() {
         fpsText.setCharacterSize(14);
         fpsText.setFillColor(sf::Color(200, 255, 200));
         fpsText.setString("FPS: --");
+        btnContinentsText.setFont(uiFont);
+        btnContinentsText.setString(U8(u8"Continents: OFF"));
+        btnContinentsText.setCharacterSize(18);
+        btnContinentsText.setFillColor(sf::Color::White);
+        auto tc = btnContinentsText.getLocalBounds();
+        btnContinentsText.setOrigin(tc.left + tc.width * 0.5f, tc.top + tc.height * 0.5f);
+        btnContinentsText.setPosition(btnContinents.getPosition() + sf::Vector2f(btnContinents.getSize().x * 0.5f, btnContinents.getSize().y * 0.5f));
+
+        btnReseedText.setFont(uiFont);
+        btnReseedText.setString(U8(u8"Re-seed"));
+        btnReseedText.setCharacterSize(18);
+        btnReseedText.setFillColor(sf::Color::White);
+        auto tr = btnReseedText.getLocalBounds();
+        btnReseedText.setOrigin(tr.left + tr.width * 0.5f, tr.top + tr.height * 0.5f);
+        btnReseedText.setPosition(btnReseed.getPosition() + sf::Vector2f(btnReseed.getSize().x * 0.5f, btnReseed.getSize().y * 0.5f));
+
+        seedText.setFont(uiFont);
+        seedText.setCharacterSize(16);
+        seedText.setFillColor(sf::Color(230, 230, 230));
+        seedText.setString("Seed: 0");
+        auto sb = seedBox.getGlobalBounds();
+        seedText.setPosition(seedBox.getPosition().x + 8.f, seedBox.getPosition().y + 4.f);
+
+        btnBakeText.setFont(uiFont);
+        btnBakeText.setString(U8(u8"Figer"));
+        btnBakeText.setCharacterSize(18);
+        btnBakeText.setFillColor(sf::Color::White);
+        auto tbk = btnBakeText.getLocalBounds();
+        btnBakeText.setOrigin(tbk.left + tbk.width * 0.5f, tbk.top + tbk.height * 0.5f);
+        btnBakeText.setPosition(btnBake.getPosition() + sf::Vector2f(btnBake.getSize().x * 0.5f, btnBake.getSize().y * 0.5f));
     }
 
     bool genHover = false;  // hover state for the Generate button
     bool gridHover = false; // hover state for the Grid button
+    bool continentsHover = false;
+    bool bakeHover = false;
     bool showGrid = false;   // toggle wireframe visibility (default OFF)
     bool shadowsEnabled = false; // F2 toggles shadows (default OFF)
+    bool continentsOpt = false; // current continents toggle
+    // Seed input state
+    bool seedEditing = false;
+    std::string seedBuffer;
 
     // Brush size & slider UI (right side)
     int brushSize = 2;                 // radius in intersections
@@ -160,6 +228,32 @@ int main() {
         float w = (float)sz.x;
         importBtnPos = sf::Vector2f(w - 16.f - btnRadius*2.f - 8.f - btnRadius*2.f, 16.f + btnRadius);
         exportBtnPos = sf::Vector2f(w - 16.f - btnRadius, 16.f + btnRadius);
+    };
+    auto updateLeftButtons = [&](){
+        // Keep left panel stacked with fixed spacing
+        btnGenerate.setPosition(16.f, 16.f);
+        btnGrid.setPosition(16.f, 16.f + 36.f + 8.f);
+        btnContinents.setPosition(16.f, 16.f + (36.f + 8.f) * 2.f);
+        btnReseed.setPosition(16.f, 16.f + (36.f + 8.f) * 3.f);
+        seedBox.setPosition(16.f, 16.f + (36.f + 8.f) * 4.f);
+        btnBake.setPosition(16.f, 16.f + (36.f + 8.f) * 5.f);
+        // Recenter texts
+        auto tb = btnText.getLocalBounds();
+        btnText.setOrigin(tb.left + tb.width * 0.5f, tb.top + tb.height * 0.5f);
+        btnText.setPosition(btnGenerate.getPosition() + sf::Vector2f(btnGenerate.getSize().x * 0.5f, btnGenerate.getSize().y * 0.5f));
+        auto tg = btnGridText.getLocalBounds();
+        btnGridText.setOrigin(tg.left + tg.width * 0.5f, tg.top + tg.height * 0.5f);
+        btnGridText.setPosition(btnGrid.getPosition() + sf::Vector2f(btnGrid.getSize().x * 0.5f, btnGrid.getSize().y * 0.5f));
+        auto tc2 = btnContinentsText.getLocalBounds();
+        btnContinentsText.setOrigin(tc2.left + tc2.width * 0.5f, tc2.top + tc2.height * 0.5f);
+        btnContinentsText.setPosition(btnContinents.getPosition() + sf::Vector2f(btnContinents.getSize().x * 0.5f, btnContinents.getSize().y * 0.5f));
+        auto tr2 = btnReseedText.getLocalBounds();
+        btnReseedText.setOrigin(tr2.left + tr2.width * 0.5f, tr2.top + tr2.height * 0.5f);
+        btnReseedText.setPosition(btnReseed.getPosition() + sf::Vector2f(btnReseed.getSize().x * 0.5f, btnReseed.getSize().y * 0.5f));
+        seedText.setPosition(seedBox.getPosition().x + 8.f, seedBox.getPosition().y + 4.f);
+        auto tbk2 = btnBakeText.getLocalBounds();
+        btnBakeText.setOrigin(tbk2.left + tbk2.width * 0.5f, tbk2.top + tbk2.height * 0.5f);
+        btnBakeText.setPosition(btnBake.getPosition() + sf::Vector2f(btnBake.getSize().x * 0.5f, btnBake.getSize().y * 0.5f));
     };
 
     // FPS counter state
@@ -414,9 +508,20 @@ int main() {
                         
                     }
                     if (ev.key.code == sf::Keyboard::G) {
-                        // keyboard shortcut to generate
-                        uint32_t seed = (uint32_t)std::rand();
-                        generateMap(seed);
+                        // Toggle procedural mode with a new random seed when enabling
+                        proceduralMode = !proceduralMode;
+                        if (proceduralMode) {
+                            proceduralSeed = (uint32_t)std::rand();
+                            chunkMgr.setMode(ChunkManager::Mode::Procedural, proceduralSeed);
+                            chunkMgr.setContinents(continentsOpt);
+                            seedBuffer.clear();
+                            seedText.setString("Seed: " + std::to_string(proceduralSeed));
+                        } else {
+                            chunkMgr.setMode(ChunkManager::Mode::Empty, 0);
+                            // Spec: non-generated mode yields zero-height chunks => set flat map
+                            std::fill(heights.begin(), heights.end(), 0);
+                            seedEditing = false;
+                        }
                     }
                     if (ev.key.code == sf::Keyboard::F3) {
                         showGrid = !showGrid;
@@ -440,13 +545,82 @@ int main() {
                         // First, check UI button in screen space (use default view)
                         sf::Vector2f screen = window.mapPixelToCoords(mp, window.getDefaultView());
                         if (btnGenerate.getGlobalBounds().contains(screen)) {
-                            uint32_t seed = (uint32_t)std::rand();
-                            generateMap(seed);
+                            // Toggle procedural mode via button
+                            proceduralMode = !proceduralMode;
+                            if (proceduralMode) {
+                                proceduralSeed = (uint32_t)std::rand();
+                                chunkMgr.setMode(ChunkManager::Mode::Procedural, proceduralSeed);
+                                seedBuffer.clear();
+                                seedText.setString("Seed: " + std::to_string(proceduralSeed));
+                            } else {
+                                chunkMgr.setMode(ChunkManager::Mode::Empty, 0);
+                                std::fill(heights.begin(), heights.end(), 0);
+                                seedEditing = false;
+                            }
                             break;
                         }
                         if (btnGrid.getGlobalBounds().contains(screen)) {
                             showGrid = !showGrid;
                             break;
+                        }
+                        if (btnContinents.getGlobalBounds().contains(screen)) {
+                            continentsOpt = !continentsOpt;
+                            if (fontLoaded) btnContinentsText.setString(U8(std::string("Continents: ") + (continentsOpt?"ON":"OFF")));
+                            if (proceduralMode) { chunkMgr.setContinents(continentsOpt); }
+                            break;
+                        }
+                        if (btnReseed.getGlobalBounds().contains(screen)) {
+                            // Re-seed current procedural generator (if ON)
+                            if (proceduralMode) {
+                                proceduralSeed = (uint32_t)std::rand();
+                                chunkMgr.setMode(ChunkManager::Mode::Procedural, proceduralSeed);
+                                chunkMgr.setContinents(continentsOpt);
+                                seedBuffer.clear();
+                                seedText.setString("Seed: " + std::to_string(proceduralSeed));
+                            }
+                            break;
+                        }
+                        if (btnBake.getGlobalBounds().contains(screen)) {
+                            // Bake: sample current procedural terrain into static heights and disable procedural mode
+                            if (proceduralMode) {
+                                // Determine world tile coordinate window centered at current view center
+                                sf::Vector2f centerWorld = view.getCenter();
+                                sf::Vector2f centerLocal = centerWorld - origin;
+                                sf::Vector2f centerIJ = isoUnprojectDyn(centerLocal, iso);
+                                int Icenter = (int)std::floor(centerIJ.x + 0.5f);
+                                int Jcenter = (int)std::floor(centerIJ.y + 0.5f);
+                                int I0 = Icenter - cfg::GRID / 2;
+                                int J0 = Jcenter - cfg::GRID / 2;
+                                auto sampleWorld = [&](int I, int J)->int{
+                                    int cx = (I >= 0) ? (I / cfg::CHUNK_SIZE) : ((I - (cfg::CHUNK_SIZE - 1)) / cfg::CHUNK_SIZE);
+                                    int cy = (J >= 0) ? (J / cfg::CHUNK_SIZE) : ((J - (cfg::CHUNK_SIZE - 1)) / cfg::CHUNK_SIZE);
+                                    int li = I - cx * cfg::CHUNK_SIZE;
+                                    int lj = J - cy * cfg::CHUNK_SIZE;
+                                    if (li < 0) { cx -= 1; li += cfg::CHUNK_SIZE; }
+                                    if (lj < 0) { cy -= 1; lj += cfg::CHUNK_SIZE; }
+                                    const Chunk& ch = chunkMgr.getChunk(cx, cy);
+                                    int S1 = cfg::CHUNK_SIZE + 1;
+                                    li = std::clamp(li, 0, cfg::CHUNK_SIZE);
+                                    lj = std::clamp(lj, 0, cfg::CHUNK_SIZE);
+                                    return ch.heights[li * S1 + lj];
+                                };
+                                for (int i = 0; i <= cfg::GRID; ++i) {
+                                    for (int j = 0; j <= cfg::GRID; ++j) {
+                                        heights[i * (cfg::GRID + 1) + j] = sampleWorld(I0 + i, J0 + j);
+                                    }
+                                }
+                                // Disable procedural mode so edits affect this baked map
+                                proceduralMode = false;
+                                chunkMgr.setMode(ChunkManager::Mode::Empty, 0);
+                            }
+                            break;
+                        }
+                        if (seedBox.getGlobalBounds().contains(screen)) {
+                            seedEditing = true;
+                            seedBuffer.clear();
+                            break;
+                        } else {
+                            seedEditing = false;
                         }
                         // Import/Export buttons (top-right, round white)
                         if (circleContains(exportBtnPos, btnRadius, screen)) {
@@ -522,6 +696,8 @@ int main() {
                         sf::Vector2f screen = window.mapPixelToCoords(mp, window.getDefaultView());
                         genHover = btnGenerate.getGlobalBounds().contains(screen);
                         gridHover = btnGrid.getGlobalBounds().contains(screen);
+                        continentsHover = btnContinents.getGlobalBounds().contains(screen);
+                        bakeHover = btnBake.getGlobalBounds().contains(screen);
                         if (brushDragging) {
                             // Update brush while dragging on slider
                             brushSize = sliderPickValue(screen);
@@ -581,11 +757,41 @@ int main() {
                         }
                     }
                     break;
+                case sf::Event::TextEntered:
+                    if (seedEditing) {
+                        sf::Uint32 u = ev.text.unicode;
+                        if (u == 13) { // Enter
+                            seedEditing = false;
+                            if (!seedBuffer.empty()) {
+                                unsigned long long v = 0ULL;
+                                try { v = std::stoull(seedBuffer); } catch (...) { v = 0ULL; }
+                                proceduralSeed = static_cast<uint32_t>(v & 0xFFFFFFFFu);
+                                if (proceduralMode) {
+                                    chunkMgr.setMode(ChunkManager::Mode::Procedural, proceduralSeed);
+                                }
+                                seedText.setString("Seed: " + std::to_string(proceduralSeed));
+                                seedBuffer.clear();
+                            }
+                        } else if (u == 27) { // Esc
+                            seedEditing = false;
+                            seedBuffer.clear();
+                        } else if (u == 8) { // Backspace
+                            if (!seedBuffer.empty()) seedBuffer.pop_back();
+                            seedText.setString("Seed: " + seedBuffer);
+                        } else if (u >= '0' && u <= '9') {
+                            if (seedBuffer.size() < 10) {
+                                seedBuffer.push_back(static_cast<char>(u));
+                                seedText.setString("Seed: " + seedBuffer);
+                            }
+                        }
+                    }
+                    break;
                 case sf::Event::Resized:
                     // Adjust view to new window size and update UI positions
                     view.setSize((float)ev.size.width, (float)ev.size.height);
                     window.setView(view);
                     updateTopRightButtons();
+                    updateLeftButtons();
                     break;
                 default: break;
             }
@@ -620,10 +826,11 @@ int main() {
         const float panSpeed = 300.f; // world units per second
         float dt = 1.f / 120.f; // approximate since we set framerate limit; could use clock for precision
         sf::Vector2f move(0.f, 0.f);
-        if (sf::Keyboard::isKeyPressed(sf::Keyboard::W) || sf::Keyboard::isKeyPressed(sf::Keyboard::Up))    move.y -= panSpeed * dt;
-        if (sf::Keyboard::isKeyPressed(sf::Keyboard::S) || sf::Keyboard::isKeyPressed(sf::Keyboard::Down))  move.y += panSpeed * dt;
-        if (sf::Keyboard::isKeyPressed(sf::Keyboard::A) || sf::Keyboard::isKeyPressed(sf::Keyboard::Left))  move.x -= panSpeed * dt;
-        if (sf::Keyboard::isKeyPressed(sf::Keyboard::D) || sf::Keyboard::isKeyPressed(sf::Keyboard::Right)) move.x += panSpeed * dt;
+        auto key = [&](sf::Keyboard::Key k){ return sf::Keyboard::isKeyPressed(k); };
+        if (key(sf::Keyboard::W) || key(sf::Keyboard::Up)    || key(sf::Keyboard::Z)) move.y -= panSpeed * dt; // ZQSD alias
+        if (key(sf::Keyboard::S) || key(sf::Keyboard::Down))                        move.y += panSpeed * dt;
+        if (key(sf::Keyboard::A) || key(sf::Keyboard::Left)  || key(sf::Keyboard::Q)) move.x -= panSpeed * dt; // ZQSD alias
+        if (key(sf::Keyboard::D) || key(sf::Keyboard::Right))                       move.x += panSpeed * dt;
         if (move.x != 0.f || move.y != 0.f) {
             view.move(move);
             window.setView(view);
@@ -632,13 +839,59 @@ int main() {
         window.clear(sf::Color::Black);
         // Wireframe-only view: do not draw filled tiles or interstices
 
-        // Build 2D map of projected intersection points (with elevation) and draw filled cells + wireframe
-        auto map2d = render::buildProjectedMap(heights, iso, origin);
-        // Draw fills first
-        render::draw2DFilledCells(window, map2d, heights, shadowsEnabled);
-        // Overlay wireframe lines (toggle)
-        if (showGrid) {
-            render::draw2DMap(window, map2d);
+        if (proceduralMode) {
+            // Per-chunk rendering with culling based on view rectangle unprojected to grid space
+            const auto& v = window.getView();
+            sf::Vector2f vc = v.getCenter();
+            sf::Vector2f vs = v.getSize();
+            const float margin = 64.f;
+            sf::FloatRect viewRect(vc.x - vs.x * 0.5f - margin,
+                                   vc.y - vs.y * 0.5f - margin,
+                                   vs.x + 2 * margin, vs.y + 2 * margin);
+
+            // Unproject view rect corners to approximate visible I,J bounds
+            auto unproj = [&](sf::Vector2f w){ return isoUnprojectDyn(w - origin, iso); };
+            sf::Vector2f p0(viewRect.left, viewRect.top);
+            sf::Vector2f p1(viewRect.left + viewRect.width, viewRect.top);
+            sf::Vector2f p2(viewRect.left + viewRect.width, viewRect.top + viewRect.height);
+            sf::Vector2f p3(viewRect.left, viewRect.top + viewRect.height);
+            sf::Vector2f ij0 = unproj(p0);
+            sf::Vector2f ij1 = unproj(p1);
+            sf::Vector2f ij2 = unproj(p2);
+            sf::Vector2f ij3 = unproj(p3);
+            float minI = std::min(std::min(ij0.x, ij1.x), std::min(ij2.x, ij3.x));
+            float maxI = std::max(std::max(ij0.x, ij1.x), std::max(ij2.x, ij3.x));
+            float minJ = std::min(std::min(ij0.y, ij1.y), std::min(ij2.y, ij3.y));
+            float maxJ = std::max(std::max(ij0.y, ij1.y), std::max(ij2.y, ij3.y));
+            // Expand a bit to avoid missing borders
+            minI -= cfg::CHUNK_SIZE * 0.5f; maxI += cfg::CHUNK_SIZE * 0.5f;
+            minJ -= cfg::CHUNK_SIZE * 0.5f; maxJ += cfg::CHUNK_SIZE * 0.5f;
+
+            auto floorDiv = [](int a, int b){ return (a >= 0) ? (a / b) : ((a - (b - 1)) / b); };
+            int Imin = (int)std::floor(minI);
+            int Imax = (int)std::ceil (maxI);
+            int Jmin = (int)std::floor(minJ);
+            int Jmax = (int)std::ceil (maxJ);
+            int cx0 = floorDiv(Imin, cfg::CHUNK_SIZE);
+            int cx1 = floorDiv(Imax, cfg::CHUNK_SIZE);
+            int cy0 = floorDiv(Jmin, cfg::CHUNK_SIZE);
+            int cy1 = floorDiv(Jmax, cfg::CHUNK_SIZE);
+
+            for (int cx = cx0; cx <= cx1; ++cx) {
+                for (int cy = cy0; cy <= cy1; ++cy) {
+                    const Chunk& ch = chunkMgr.getChunk(cx, cy);
+                    int I0 = cx * cfg::CHUNK_SIZE;
+                    int J0 = cy * cfg::CHUNK_SIZE;
+                    auto cMap2d = render::buildProjectedMapChunk(ch.heights, cfg::CHUNK_SIZE, I0, J0, iso, origin);
+                    render::draw2DFilledCellsChunk(window, cMap2d, ch.heights, cfg::CHUNK_SIZE, shadowsEnabled);
+                    if (showGrid) render::draw2DMapChunk(window, cMap2d);
+                }
+            }
+        } else {
+            // Non-procedural path: use global heights buffer
+            auto map2d = render::buildProjectedMap(heights, iso, origin);
+            render::draw2DFilledCells(window, map2d, heights, shadowsEnabled);
+            if (showGrid) render::draw2DMap(window, map2d);
         }
 
         // Draw UI in screen space (default view)
@@ -655,11 +908,11 @@ int main() {
         if (genHover) {
             sf::RectangleShape hoverOverlay(btnGenerate.getSize());
             hoverOverlay.setPosition(btnGenerate.getPosition());
-            hoverOverlay.setFillColor(sf::Color(255, 255, 255, 28));
+            hoverOverlay.setFillColor(sf::Color(255, 255, 255, 20));
             window.draw(hoverOverlay);
         }
-        if (fontLoaded) window.draw(btnText);
-
+        window.draw(btnText);
+        // Draw Grid toggle
         // Grid button
         if (gridHover) {
             btnGrid.setFillColor(sf::Color(50, 50, 50, 230));
@@ -674,6 +927,42 @@ int main() {
             window.draw(hoverOverlay2);
         }
         if (fontLoaded) window.draw(btnGridText);
+
+        // Continents toggle
+        if (continentsHover) {
+            btnContinents.setFillColor(sf::Color(50, 50, 50, 230));
+        } else {
+            btnContinents.setFillColor(sf::Color(30, 30, 30, 200));
+        }
+        window.draw(btnContinents);
+        if (continentsHover) {
+            sf::RectangleShape hov(btnContinents.getSize());
+            hov.setPosition(btnContinents.getPosition());
+            hov.setFillColor(sf::Color(255,255,255,20));
+            window.draw(hov);
+        }
+        if (fontLoaded) window.draw(btnContinentsText);
+
+        // Reseed
+        window.draw(btnReseed);
+        if (fontLoaded) window.draw(btnReseedText);
+        // Seed box
+        window.draw(seedBox);
+        if (fontLoaded) window.draw(seedText);
+        // Bake
+        if (bakeHover) {
+            btnBake.setFillColor(sf::Color(50, 50, 50, 230));
+        } else {
+            btnBake.setFillColor(sf::Color(30, 30, 30, 200));
+        }
+        window.draw(btnBake);
+        if (bakeHover) {
+            sf::RectangleShape hov(btnBake.getSize());
+            hov.setPosition(btnBake.getPosition());
+            hov.setFillColor(sf::Color(255,255,255,20));
+            window.draw(hov);
+        }
+        if (fontLoaded) window.draw(btnBakeText);
 
         // One window size fetch per frame for UI positions
         auto wsz = window.getSize();
