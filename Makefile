@@ -73,6 +73,7 @@ ifeq ($(OS),Windows_NT)
       MINGW_BIN := C:/msys64/mingw64/bin
     endif
   endif
+  
 
   # Print what we detected (helps diagnose if -L is missing)
   $(info SFML_INC=$(SFML_INC))
@@ -85,9 +86,9 @@ ifeq ($(OS),Windows_NT)
   # Pre-link command on Windows to ensure previous exe is removed
   PRELINK := del /F /Q "$(BIN_DIR)\\game$(EXE)" 2>nul || exit /B 0
 
-  # Run command on Windows: use the user-confirmed working command
+  # Run command on Windows: prepend SFML and MinGW bin dirs to PATH
   # Important: escape % as %% for GNU Make so cmd sees a single %
-  RUN_CMD := cmd /C "set PATH=C:\\SFML-2.6.1\\bin;C:\\msys64\\mingw64\\bin;%%PATH%% && .\\bin\\game.exe"
+  RUN_CMD := cmd /C "set PATH=$(SFML_BIN);$(MINGW_BIN);%%PATH%% && .\\bin\\game.exe"
 
 .PHONY: package
 package: $(TARGET)
@@ -95,6 +96,8 @@ package: $(TARGET)
 	@echo Packaging DLLs into "$(BIN_DIR)" ...
 	@if exist "assets" xcopy /E /I /Y "assets" "$(BIN_DIR)\\assets" >nul
 	@if exist "$(SFML_BIN)" copy /Y "$(SFML_BIN)\\*.dll" "$(BIN_DIR)\\" >nul
+	@REM Also copy SFML external dependency DLLs from extlibs if present (freetype/ogg/vorbis/flac/jpeg/png/zlib)
+	@if exist "$(SFML_DIR)\\extlibs\\bin\\x64" copy /Y "$(SFML_DIR)\\extlibs\\bin\\x64\\*.dll" "$(BIN_DIR)\\" >nul
 	@if exist "$(MINGW_BIN)" copy /Y "$(MINGW_BIN)\\*.dll" "$(BIN_DIR)\\" >nul
 	@echo Done.
 

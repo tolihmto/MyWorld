@@ -9,8 +9,12 @@
 #include <sstream>
 #include <cstdio>
 #include <iostream>
+#include <chrono>
+#include <ctime>
 #ifdef _WIN32
-#define NOMINMAX
+#ifndef NOMINMAX
+#define NOMINMAX 1
+#endif
 #include <windows.h>
 #include <commdlg.h>
 #endif
@@ -34,8 +38,32 @@
 // Config, iso, terrain and rendering are provided by headers above
 
 int main() {
+    // Minimal file logger to diagnose silent exit when running as GUI app
+    std::ofstream __log("log.txt", std::ios::app);
+    auto __now = [](){
+        auto t = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+        std::tm tm{};
+#ifdef _WIN32
+        localtime_s(&tm, &t);
+#else
+        localtime_r(&t, &tm);
+#endif
+        char buf[64];
+        std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm);
+        return std::string(buf);
+    };
+    if (__log) {
+        __log << "[" << __now() << "] main() start" << std::endl;
+    }
+    try {
+        // Redirect SFML error stream to our log as well
+        if (__log) {
+            sf::err().rdbuf(__log.rdbuf());
+        }
+    if (__log) __log << "[" << __now() << "] creating window" << std::endl;
     sf::RenderWindow window(sf::VideoMode(cfg::WINDOW_W, cfg::WINDOW_H), "MyWorld - SFML Isometric Grid");
     window.setFramerateLimit(120);
+    if (__log) __log << "[" << __now() << "] window created: " << window.isOpen() << std::endl;
 
     // World view (camera)
     sf::View view(sf::FloatRect(0.f, 0.f, static_cast<float>(cfg::WINDOW_W), static_cast<float>(cfg::WINDOW_H)));
@@ -61,8 +89,9 @@ int main() {
 
     // Chunked world manager (procedural mode)
     ChunkManager chunkMgr;
-    bool proceduralMode = false;
-    uint32_t proceduralSeed = 0;
+    bool proceduralMode = true;   // start with procedural active
+    bool waterOnly = true;        // show only water until user generates
+    uint32_t proceduralSeed = (uint32_t)std::rand();
 
     
 
@@ -72,6 +101,7 @@ int main() {
     // --- UI: "Générer" button ---
     sf::Font uiFont;
     bool fontLoaded = uiFont.loadFromFile("assets/fonts/arial.ttf");
+    if (__log) __log << "[" << __now() << "] fontLoaded=" << (fontLoaded?"true":"false") << std::endl;
     sf::RectangleShape btnGenerate(sf::Vector2f(140.f, 36.f));
     btnGenerate.setFillColor(sf::Color(30, 30, 30, 200));
     btnGenerate.setOutlineThickness(2.f);
@@ -83,33 +113,39 @@ int main() {
     btnGrid.setOutlineThickness(2.f);
     btnGrid.setOutlineColor(sf::Color(200, 200, 200));
     btnGrid.setPosition(16.f, 16.f + 36.f + 8.f);
-    // Continents toggle, Re-seed button and Seed input box, Bake button
+    // Continents toggle, RESET, Re-seed button and Seed input box, Bake button
     sf::RectangleShape btnContinents(sf::Vector2f(140.f, 36.f));
     btnContinents.setFillColor(sf::Color(30, 30, 30, 200));
     btnContinents.setOutlineThickness(2.f);
     btnContinents.setOutlineColor(sf::Color(200, 200, 200));
     btnContinents.setPosition(16.f, 16.f + (36.f + 8.f) * 2.f);
+    sf::RectangleShape btnReset(sf::Vector2f(140.f, 36.f));
+    btnReset.setFillColor(sf::Color(30, 30, 30, 200));
+    btnReset.setOutlineThickness(2.f);
+    btnReset.setOutlineColor(sf::Color(200, 200, 200));
+    btnReset.setPosition(16.f, 16.f + (36.f + 8.f) * 3.f);
     sf::RectangleShape btnReseed(sf::Vector2f(140.f, 36.f));
     btnReseed.setFillColor(sf::Color(30, 30, 30, 200));
     btnReseed.setOutlineThickness(2.f);
     btnReseed.setOutlineColor(sf::Color(200, 200, 200));
-    btnReseed.setPosition(16.f, 16.f + (36.f + 8.f) * 3.f);
+    btnReseed.setPosition(16.f, 16.f + (36.f + 8.f) * 4.f);
 
     sf::RectangleShape seedBox(sf::Vector2f(140.f, 28.f));
     seedBox.setFillColor(sf::Color(20, 20, 20, 200));
     seedBox.setOutlineThickness(2.f);
     seedBox.setOutlineColor(sf::Color(180, 180, 180));
-    seedBox.setPosition(16.f, 16.f + (36.f + 8.f) * 4.f);
+    seedBox.setPosition(16.f, 16.f + (36.f + 8.f) * 5.f);
     sf::RectangleShape btnBake(sf::Vector2f(140.f, 36.f));
     btnBake.setFillColor(sf::Color(30, 30, 30, 200));
     btnBake.setOutlineThickness(2.f);
     btnBake.setOutlineColor(sf::Color(200, 200, 200));
-    btnBake.setPosition(16.f, 16.f + (36.f + 8.f) * 5.f);
+    btnBake.setPosition(16.f, 16.f + (36.f + 8.f) * 6.f);
 
     sf::Text btnText;
     sf::Text btnGridText;
     sf::Text btnContinentsText;
     sf::Text btnReseedText;
+    sf::Text btnResetText;
     sf::Text seedText;
     sf::Text btnBakeText;
     // Persistent help and FPS texts (avoid realloc each frame)
@@ -166,6 +202,14 @@ int main() {
         btnReseedText.setOrigin(tr.left + tr.width * 0.5f, tr.top + tr.height * 0.5f);
         btnReseedText.setPosition(btnReseed.getPosition() + sf::Vector2f(btnReseed.getSize().x * 0.5f, btnReseed.getSize().y * 0.5f));
 
+        btnResetText.setFont(uiFont);
+        btnResetText.setString(U8(u8"RESET"));
+        btnResetText.setCharacterSize(18);
+        btnResetText.setFillColor(sf::Color::White);
+        auto trr = btnResetText.getLocalBounds();
+        btnResetText.setOrigin(trr.left + trr.width * 0.5f, trr.top + trr.height * 0.5f);
+        btnResetText.setPosition(btnReset.getPosition() + sf::Vector2f(btnReset.getSize().x * 0.5f, btnReset.getSize().y * 0.5f));
+
         seedText.setFont(uiFont);
         seedText.setCharacterSize(16);
         seedText.setFillColor(sf::Color(230, 230, 230));
@@ -186,6 +230,7 @@ int main() {
     bool gridHover = false; // hover state for the Grid button
     bool continentsHover = false;
     bool bakeHover = false;
+    bool resetHover = false;
     bool showGrid = false;   // toggle wireframe visibility (default OFF)
     bool shadowsEnabled = false; // F2 toggles shadows (default OFF)
     bool continentsOpt = false; // current continents toggle
@@ -198,6 +243,8 @@ int main() {
     const int brushMin = 1;
     const int brushMax = 8;
     bool brushDragging = false;
+    
+    // Terrain height slider removed; fixed scale used in rendering
     // Painting throttle (Option A): apply brush at fixed cadence independent of event rate
     sf::Clock paintClock;
     sf::Time  paintTick = sf::milliseconds(8); // ~125 Hz
@@ -211,6 +258,8 @@ int main() {
     sf::Sprite  sprExport, sprImport;
     bool exportLoaded = texExport.loadFromFile("assets/images/exporter.png");
     bool importLoaded = texImport.loadFromFile("assets/images/importer.png");
+    if (__log) __log << "[" << __now() << "] exportLoaded=" << (exportLoaded?"true":"false")
+                     << ", importLoaded=" << (importLoaded?"true":"false") << std::endl;
     if (exportLoaded) {
         sprExport.setTexture(texExport);
         auto ts = texExport.getSize();
@@ -234,9 +283,10 @@ int main() {
         btnGenerate.setPosition(16.f, 16.f);
         btnGrid.setPosition(16.f, 16.f + 36.f + 8.f);
         btnContinents.setPosition(16.f, 16.f + (36.f + 8.f) * 2.f);
-        btnReseed.setPosition(16.f, 16.f + (36.f + 8.f) * 3.f);
-        seedBox.setPosition(16.f, 16.f + (36.f + 8.f) * 4.f);
-        btnBake.setPosition(16.f, 16.f + (36.f + 8.f) * 5.f);
+        btnReset.setPosition(16.f, 16.f + (36.f + 8.f) * 3.f);
+        btnReseed.setPosition(16.f, 16.f + (36.f + 8.f) * 4.f);
+        seedBox.setPosition(16.f, 16.f + (36.f + 8.f) * 5.f);
+        btnBake.setPosition(16.f, 16.f + (36.f + 8.f) * 6.f);
         // Recenter texts
         auto tb = btnText.getLocalBounds();
         btnText.setOrigin(tb.left + tb.width * 0.5f, tb.top + tb.height * 0.5f);
@@ -247,6 +297,9 @@ int main() {
         auto tc2 = btnContinentsText.getLocalBounds();
         btnContinentsText.setOrigin(tc2.left + tc2.width * 0.5f, tc2.top + tc2.height * 0.5f);
         btnContinentsText.setPosition(btnContinents.getPosition() + sf::Vector2f(btnContinents.getSize().x * 0.5f, btnContinents.getSize().y * 0.5f));
+        auto trr2 = btnResetText.getLocalBounds();
+        btnResetText.setOrigin(trr2.left + trr2.width * 0.5f, trr2.top + trr2.height * 0.5f);
+        btnResetText.setPosition(btnReset.getPosition() + sf::Vector2f(btnReset.getSize().x * 0.5f, btnReset.getSize().y * 0.5f));
         auto tr2 = btnReseedText.getLocalBounds();
         btnReseedText.setOrigin(tr2.left + tr2.width * 0.5f, tr2.top + tr2.height * 0.5f);
         btnReseedText.setPosition(btnReseed.getPosition() + sf::Vector2f(btnReseed.getSize().x * 0.5f, btnReseed.getSize().y * 0.5f));
@@ -428,6 +481,8 @@ int main() {
         return std::clamp(v, brushMin, brushMax);
     };
 
+    // (height slider UI removed)
+
     // Panning vars
     bool panning = false;
     bool tilting = false;
@@ -438,6 +493,13 @@ int main() {
     float tiltStartPitch = 1.f;
 
     
+
+    // Initialize procedural mode and seed text
+    if (proceduralMode) {
+        chunkMgr.setMode(ChunkManager::Mode::Procedural, proceduralSeed);
+        chunkMgr.setContinents(continentsOpt);
+        if (fontLoaded) seedText.setString("Seed: " + std::to_string(proceduralSeed));
+    }
 
     // Fullscreen toggle (F11)
     bool isFullscreen = false;
@@ -470,20 +532,24 @@ int main() {
         sf::Vector2f ij = isoUnprojectDyn(local, iso);
         int I = static_cast<int>(std::round(ij.x));
         int J = static_cast<int>(std::round(ij.y));
-        I = std::clamp(I, 0, cfg::GRID);
-        J = std::clamp(J, 0, cfg::GRID);
+        if (!proceduralMode) {
+            I = std::clamp(I, 0, cfg::GRID);
+            J = std::clamp(J, 0, cfg::GRID);
+        }
         return {I, J};
     };
 
     auto pointInsideGrid = [&](sf::Vector2f world)->bool {
         sf::Vector2f local = world - origin;
         sf::Vector2f ij = isoUnprojectDyn(local, iso);
+        if (proceduralMode) return true; // infinite procedural world
         return (ij.x >= 0.f && ij.y >= 0.f && ij.x <= (float)cfg::GRID && ij.y <= (float)cfg::GRID);
     };
 
     // Rendering moved to render::*
 
     // Main loop
+    if (__log) __log << "[" << __now() << "] entering main loop" << std::endl;
     while (window.isOpen()) {
         sf::Event ev;
         while (window.pollEvent(ev)) {
@@ -492,9 +558,9 @@ int main() {
                     window.close();
                     break;
                 case sf::Event::KeyPressed:
-                    if (ev.key.code == sf::Keyboard::Escape) window.close();
+                    if (ev.key.code == sf::Keyboard::Escape) { if (__log) __log << "[" << __now() << "] Escape pressed -> close" << std::endl; window.close(); }
                     if (ev.key.code == sf::Keyboard::F11) {
-                        recreateWindow(!isFullscreen);
+                        if (__log) __log << "[" << __now() << "] toggle fullscreen" << std::endl; recreateWindow(!isFullscreen);
                     }
                     if (ev.key.code == sf::Keyboard::R) {
                         // Reset camera and projection to defaults (45° rotation, pitch 1)
@@ -505,35 +571,45 @@ int main() {
                         sf::Vector2f newCenter = isoProjectDyn(cfg::GRID * 0.5f, cfg::GRID * 0.5f, 0.f, iso) + origin;
                         view.setCenter(newCenter);
                         window.setView(view);
-                        
+                        if (__log) __log << "[" << __now() << "] Reset view (R)" << std::endl;
                     }
                     if (ev.key.code == sf::Keyboard::G) {
-                        // Toggle procedural mode with a new random seed when enabling
-                        proceduralMode = !proceduralMode;
-                        if (proceduralMode) {
+                        // Reveal or hide terrain while staying procedural
+                        if (!proceduralMode) {
+                            proceduralMode = true;
                             proceduralSeed = (uint32_t)std::rand();
                             chunkMgr.setMode(ChunkManager::Mode::Procedural, proceduralSeed);
                             chunkMgr.setContinents(continentsOpt);
-                            seedBuffer.clear();
-                            seedText.setString("Seed: " + std::to_string(proceduralSeed));
-                        } else {
-                            chunkMgr.setMode(ChunkManager::Mode::Empty, 0);
-                            // Spec: non-generated mode yields zero-height chunks => set flat map
-                            std::fill(heights.begin(), heights.end(), 0);
-                            seedEditing = false;
+                            if (fontLoaded) seedText.setString("Seed: " + std::to_string(proceduralSeed));
                         }
+                        waterOnly = !waterOnly;
+                        if (__log) __log << "[" << __now() << "] WaterOnly toggle -> " << (waterOnly?"ON":"OFF") << std::endl;
                     }
                     if (ev.key.code == sf::Keyboard::F3) {
-                        showGrid = !showGrid;
+                        showGrid = !showGrid; if (__log) __log << "[" << __now() << "] Grid toggle -> " << (showGrid?"ON":"OFF") << std::endl;
                     }
                     if (ev.key.code == sf::Keyboard::F2) {
-                        shadowsEnabled = !shadowsEnabled;
+                        shadowsEnabled = !shadowsEnabled; if (__log) __log << "[" << __now() << "] Shadows toggle -> " << (shadowsEnabled?"ON":"OFF") << std::endl;
                     }
                     break;
                 case sf::Event::MouseWheelScrolled:
-                    if (ev.mouseWheelScroll.delta > 0) view.zoom(0.9f);
-                    else view.zoom(1.1f);
-                    window.setView(view);
+                    {
+                        // Zoom with limits: prevent infinite zoom out/in
+                        sf::Vector2f viewSize = view.getSize();
+                        sf::Vector2f defSize  = window.getDefaultView().getSize();
+                        float curScale = std::max(viewSize.x / std::max(1.f, defSize.x), viewSize.y / std::max(1.f, defSize.y));
+                        const float minZoom = 0.35f;  // smallest scale (most zoomed in)
+                        const float maxZoom = 6.0f;   // largest scale (most zoomed out)
+                        float desired = (ev.mouseWheelScroll.delta > 0) ? 0.9f : 1.1f;
+                        float newScale = curScale * desired;
+                        float apply = desired;
+                        if (newScale < minZoom) apply = std::max(0.01f, minZoom / std::max(0.01f, curScale));
+                        if (newScale > maxZoom) apply = std::max(0.01f, maxZoom / std::max(0.01f, curScale));
+                        if (std::fabs(apply - 1.f) > 1e-4f) {
+                            view.zoom(apply);
+                            window.setView(view);
+                        }
+                    }
                     break;
                 case sf::Event::MouseButtonPressed:
                     if (ev.mouseButton.button == sf::Mouse::Middle) {
@@ -545,28 +621,34 @@ int main() {
                         // First, check UI button in screen space (use default view)
                         sf::Vector2f screen = window.mapPixelToCoords(mp, window.getDefaultView());
                         if (btnGenerate.getGlobalBounds().contains(screen)) {
-                            // Toggle procedural mode via button
-                            proceduralMode = !proceduralMode;
-                            if (proceduralMode) {
+                            // Reveal terrain from water-only
+                            if (!proceduralMode) {
+                                proceduralMode = true;
                                 proceduralSeed = (uint32_t)std::rand();
                                 chunkMgr.setMode(ChunkManager::Mode::Procedural, proceduralSeed);
-                                seedBuffer.clear();
-                                seedText.setString("Seed: " + std::to_string(proceduralSeed));
-                            } else {
-                                chunkMgr.setMode(ChunkManager::Mode::Empty, 0);
-                                std::fill(heights.begin(), heights.end(), 0);
-                                seedEditing = false;
+                                chunkMgr.setContinents(continentsOpt);
                             }
+                            waterOnly = false;
+                            if (fontLoaded) seedText.setString("Seed: " + std::to_string(proceduralSeed));
                             break;
                         }
                         if (btnGrid.getGlobalBounds().contains(screen)) {
-                            showGrid = !showGrid;
+                            showGrid = !showGrid; if (__log) __log << "[" << __now() << "] Grid toggle (button) -> " << (showGrid?"ON":"OFF") << std::endl;
                             break;
                         }
                         if (btnContinents.getGlobalBounds().contains(screen)) {
-                            continentsOpt = !continentsOpt;
+                            continentsOpt = !continentsOpt; if (__log) __log << "[" << __now() << "] Continents toggle -> " << (continentsOpt?"ON":"OFF") << std::endl;
                             if (fontLoaded) btnContinentsText.setString(U8(std::string("Continents: ") + (continentsOpt?"ON":"OFF")));
                             if (proceduralMode) { chunkMgr.setContinents(continentsOpt); }
+                            break;
+                        }
+                        if (btnReset.getGlobalBounds().contains(screen)) {
+                            // Reset to water-only but keep procedural world active (same seed)
+                            if (__log) __log << "[" << __now() << "] RESET clicked -> water-only" << std::endl;
+                            proceduralMode = true;
+                            waterOnly = true;
+                            chunkMgr.setMode(ChunkManager::Mode::Procedural, proceduralSeed);
+                            chunkMgr.setContinents(continentsOpt);
                             break;
                         }
                         if (btnReseed.getGlobalBounds().contains(screen)) {
@@ -624,15 +706,16 @@ int main() {
                         }
                         // Import/Export buttons (top-right, round white)
                         if (circleContains(exportBtnPos, btnRadius, screen)) {
-                            std::string path = saveFileDialogCSV();
+                            if (__log) __log << "[" << __now() << "] Export clicked" << std::endl; std::string path = saveFileDialogCSV();
                             if (!path.empty()) exportCSV(path);
                             break;
                         }
                         if (circleContains(importBtnPos, btnRadius, screen)) {
-                            std::string path = openFileDialogCSV();
+                            if (__log) __log << "[" << __now() << "] Import clicked" << std::endl; std::string path = openFileDialogCSV();
                             if (!path.empty()) beginImport(path);
                             break;
                         }
+                        // (height slider removed)
                         // Brush slider interaction (right side)
                         if (sliderTrackRect().contains(screen) || sliderThumbRect(brushSize).contains(screen)) {
                             brushDragging = true;
@@ -648,16 +731,33 @@ int main() {
                             bool ctrl = sf::Keyboard::isKeyPressed(sf::Keyboard::LControl) || sf::Keyboard::isKeyPressed(sf::Keyboard::RControl);
                             if (ctrl && ev.mouseButton.button == sf::Mouse::Left) {
                                 // Capture flatten reference height on first Ctrl+click
-                                flattenHeight = heights[idx(IJ.x, IJ.y)];
+                                if (proceduralMode) {
+                                    // Sample from procedural chunk at IJ
+                                    auto floorDiv = [](int a, int b){ return (a >= 0) ? (a / b) : ((a - (b - 1)) / b); };
+                                    int cx = floorDiv(IJ.x, cfg::CHUNK_SIZE);
+                                    int cy = floorDiv(IJ.y, cfg::CHUNK_SIZE);
+                                    const Chunk& ch = chunkMgr.getChunk(cx, cy);
+                                    int li = IJ.x - cx * cfg::CHUNK_SIZE;
+                                    int lj = IJ.y - cy * cfg::CHUNK_SIZE;
+                                    li = std::clamp(li, 0, cfg::CHUNK_SIZE);
+                                    lj = std::clamp(lj, 0, cfg::CHUNK_SIZE);
+                                    flattenHeight = ch.heights[li * (cfg::CHUNK_SIZE + 1) + lj];
+                                } else {
+                                    flattenHeight = heights[idx(IJ.x, IJ.y)];
+                                }
                                 flattenPrimed = true;
                                 // Immediately flatten current brush area
                                 for (int di = -brush; di <= brush; ++di) {
                                     for (int dj = -brush; dj <= brush; ++dj) {
                                         int I = IJ.x + di;
                                         int J = IJ.y + dj;
-                                        if (I < 0 || J < 0 || I > cfg::GRID || J > cfg::GRID) continue;
+                                        if (!proceduralMode) { if (I < 0 || J < 0 || I > cfg::GRID || J > cfg::GRID) continue; }
                                         if (di*di + dj*dj > brush*brush) continue;
-                                        heights[idx(I, J)] = flattenHeight;
+                                        if (proceduralMode) {
+                                            chunkMgr.applySetAt(I, J, flattenHeight);
+                                        } else {
+                                            heights[idx(I, J)] = flattenHeight;
+                                        }
                                     }
                                 }
                                 
@@ -667,10 +767,14 @@ int main() {
                                     for (int dj = -brush; dj <= brush; ++dj) {
                                         int I = IJ.x + di;
                                         int J = IJ.y + dj;
-                                        if (I < 0 || J < 0 || I > cfg::GRID || J > cfg::GRID) continue;
+                                        if (!proceduralMode) { if (I < 0 || J < 0 || I > cfg::GRID || J > cfg::GRID) continue; }
                                         // circular brush shape
                                         if (di*di + dj*dj > brush*brush) continue;
-                                        heights[idx(I, J)] += delta;
+                                        if (proceduralMode) {
+                                            chunkMgr.applyDeltaAt(I, J, delta);
+                                        } else {
+                                            heights[idx(I, J)] += delta;
+                                        }
                                     }
                                 }
                                 
@@ -698,6 +802,7 @@ int main() {
                         gridHover = btnGrid.getGlobalBounds().contains(screen);
                         continentsHover = btnContinents.getGlobalBounds().contains(screen);
                         bakeHover = btnBake.getGlobalBounds().contains(screen);
+                        // (height slider removed)
                         if (brushDragging) {
                             // Update brush while dragging on slider
                             brushSize = sliderPickValue(screen);
@@ -718,9 +823,13 @@ int main() {
                                             for (int dj = -brush; dj <= brush; ++dj) {
                                                 int I = IJ.x + di;
                                                 int J = IJ.y + dj;
-                                                if (I < 0 || J < 0 || I > cfg::GRID || J > cfg::GRID) continue;
+                                                if (!proceduralMode) { if (I < 0 || J < 0 || I > cfg::GRID || J > cfg::GRID) continue; }
                                                 if (di*di + dj*dj > brush*brush) continue;
-                                                heights[idx(I, J)] = flattenHeight;
+                                                if (proceduralMode) {
+                                                    chunkMgr.applySetAt(I, J, flattenHeight);
+                                                } else {
+                                                    heights[idx(I, J)] = flattenHeight;
+                                                }
                                             }
                                         }
                                     } else {
@@ -729,9 +838,13 @@ int main() {
                                             for (int dj = -brush; dj <= brush; ++dj) {
                                                 int I = IJ.x + di;
                                                 int J = IJ.y + dj;
-                                                if (I < 0 || J < 0 || I > cfg::GRID || J > cfg::GRID) continue;
+                                                if (!proceduralMode) { if (I < 0 || J < 0 || I > cfg::GRID || J > cfg::GRID) continue; }
                                                 if (di*di + dj*dj > brush*brush) continue;
-                                                heights[idx(I, J)] += delta;
+                                                if (proceduralMode) {
+                                                    chunkMgr.applyDeltaAt(I, J, delta);
+                                                } else {
+                                                    heights[idx(I, J)] += delta;
+                                                }
                                             }
                                         }
                                     }
@@ -823,7 +936,12 @@ int main() {
         }
 
         // Keyboard panning
-        const float panSpeed = 300.f; // world units per second
+        const float panSpeedBase = 300.f; // base world units per second at default zoom
+        // Scale speed with zoom level: larger view size => faster pan
+        sf::Vector2f viewSize = view.getSize();
+        sf::Vector2f defSize  = window.getDefaultView().getSize();
+        float zoomScale = std::max(viewSize.x / std::max(1.f, defSize.x), viewSize.y / std::max(1.f, defSize.y));
+        float panSpeed = panSpeedBase * std::max(0.1f, zoomScale);
         float dt = 1.f / 120.f; // approximate since we set framerate limit; could use clock for precision
         sf::Vector2f move(0.f, 0.f);
         auto key = [&](sf::Keyboard::Key k){ return sf::Keyboard::isKeyPressed(k); };
@@ -877,20 +995,55 @@ int main() {
             int cy0 = floorDiv(Jmin, cfg::CHUNK_SIZE);
             int cy1 = floorDiv(Jmax, cfg::CHUNK_SIZE);
 
+            // LOD: limit chunk generation/draw radius according to zoom (and a hard cap)
+            sf::Vector2f defSize = window.getDefaultView().getSize();
+            float zoomScale = std::max(vs.x / std::max(1.f, defSize.x), vs.y / std::max(1.f, defSize.y));
+            // Smaller radius when zoomed out (large zoomScale), bigger when zoomed in
+            const int hardMaxRadius = 10;   // never generate beyond this many chunks from center
+            const float lodBase = 7.5f;     // tune base radius
+            int allowedRadius = (int)std::clamp(std::round(lodBase / std::max(0.5f, zoomScale)), 2.f, (float)hardMaxRadius);
+
+            // Determine center chunk from view center in grid coords
+            sf::Vector2f ijC = unproj(vc);
+            int Icenter = (int)std::floor(ijC.x + 0.5f);
+            int Jcenter = (int)std::floor(ijC.y + 0.5f);
+            int ccx = floorDiv(Icenter, cfg::CHUNK_SIZE);
+            int ccy = floorDiv(Jcenter, cfg::CHUNK_SIZE);
+
             for (int cx = cx0; cx <= cx1; ++cx) {
                 for (int cy = cy0; cy <= cy1; ++cy) {
+                    // Skip chunks outside LOD radius (Chebyshev distance for square ring)
+                    int dx = std::abs(cx - ccx);
+                    int dy = std::abs(cy - ccy);
+                    if (std::max(dx, dy) > allowedRadius) continue;
                     const Chunk& ch = chunkMgr.getChunk(cx, cy);
                     int I0 = cx * cfg::CHUNK_SIZE;
                     int J0 = cy * cfg::CHUNK_SIZE;
-                    auto cMap2d = render::buildProjectedMapChunk(ch.heights, cfg::CHUNK_SIZE, I0, J0, iso, origin);
-                    render::draw2DFilledCellsChunk(window, cMap2d, ch.heights, cfg::CHUNK_SIZE, shadowsEnabled);
-                    if (showGrid) render::draw2DMapChunk(window, cMap2d);
+                    // If water-only: base is flat sea (0). Show only user edits (overrides) above sea.
+                    if (waterOnly) {
+                        static std::vector<int> waterBuf;
+                        const int side1 = (cfg::CHUNK_SIZE + 1);
+                        waterBuf.resize(side1 * side1);
+                        for (size_t k = 0; k < waterBuf.size(); ++k) {
+                            int v = 0;
+                            // Only show explicit edits; ignore generated terrain
+                            if (k < ch.overrideMask.size() && ch.overrideMask[k]) v = ch.overrides[k];
+                            waterBuf[k] = std::max(0, v);
+                        }
+                        auto cMap2d = render::buildProjectedMapChunk(waterBuf, cfg::CHUNK_SIZE, I0, J0, iso, origin, 1.0f);
+                        render::draw2DFilledCellsChunk(window, cMap2d, waterBuf, cfg::CHUNK_SIZE, shadowsEnabled, 1.0f);
+                        if (showGrid) render::draw2DMapChunk(window, cMap2d);
+                    } else {
+                        auto cMap2d = render::buildProjectedMapChunk(ch.heights, cfg::CHUNK_SIZE, I0, J0, iso, origin, 1.0f);
+                        render::draw2DFilledCellsChunk(window, cMap2d, ch.heights, cfg::CHUNK_SIZE, shadowsEnabled, 1.0f);
+                        if (showGrid) render::draw2DMapChunk(window, cMap2d);
+                    }
                 }
             }
         } else {
             // Non-procedural path: use global heights buffer
-            auto map2d = render::buildProjectedMap(heights, iso, origin);
-            render::draw2DFilledCells(window, map2d, heights, shadowsEnabled);
+            auto map2d = render::buildProjectedMap(heights, iso, origin, 1.0f);
+            render::draw2DFilledCells(window, map2d, heights, shadowsEnabled, 1.0f);
             if (showGrid) render::draw2DMap(window, map2d);
         }
 
@@ -942,6 +1095,21 @@ int main() {
             window.draw(hov);
         }
         if (fontLoaded) window.draw(btnContinentsText);
+
+        // RESET button
+        if (resetHover) {
+            btnReset.setFillColor(sf::Color(50, 50, 50, 230));
+        } else {
+            btnReset.setFillColor(sf::Color(30, 30, 30, 200));
+        }
+        window.draw(btnReset);
+        if (resetHover) {
+            sf::RectangleShape hov(btnReset.getSize());
+            hov.setPosition(btnReset.getPosition());
+            hov.setFillColor(sf::Color(255,255,255,20));
+            window.draw(hov);
+        }
+        if (fontLoaded) window.draw(btnResetText);
 
         // Reseed
         window.draw(btnReseed);
@@ -1004,6 +1172,12 @@ int main() {
         sf::Vector2f screen = window.mapPixelToCoords(mp, window.getDefaultView());
         bool hoverExport = circleContains(exportBtnPos, btnRadius, screen);
         bool hoverImport = circleContains(importBtnPos, btnRadius, screen);
+        // Update hovers for left buttons
+        genHover = btnGenerate.getGlobalBounds().contains(screen);
+        gridHover = btnGrid.getGlobalBounds().contains(screen);
+        continentsHover = btnContinents.getGlobalBounds().contains(screen);
+        resetHover = btnReset.getGlobalBounds().contains(screen);
+        bakeHover = btnBake.getGlobalBounds().contains(screen);
         drawRoundButton(importBtnPos, sprImport, hoverImport);
         drawRoundButton(exportBtnPos, sprExport, hoverExport);
 
@@ -1040,6 +1214,8 @@ int main() {
             fpsText.setPosition(fx, fy);
             window.draw(fpsText);
         }
+
+        // (height slider removed)
 
         // Brush slider (right side)
         sf::FloatRect tr = sliderTrackRect();
@@ -1078,6 +1254,15 @@ int main() {
         window.setView(oldView);
 
         window.display();
+    }
+
+    if (__log) __log << "[" << __now() << "] main loop ended, exiting cleanly" << std::endl;
+    } catch (const std::exception& ex) {
+        if (__log) { __log << "[" << __now() << "] exception: " << ex.what() << std::endl; }
+        else { std::ofstream f("log.txt", std::ios::app); if (f) f << "[exception] " << ex.what() << std::endl; }
+    } catch (...) {
+        if (__log) { __log << "[" << __now() << "] unknown exception" << std::endl; }
+        else { std::ofstream f("log.txt", std::ios::app); if (f) f << "[unknown exception]" << std::endl; }
     }
 
     return 0;

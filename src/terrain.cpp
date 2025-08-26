@@ -109,8 +109,32 @@ void generateMap(std::vector<int>& heights, uint32_t seed){
             n = std::clamp(n, 0.0f, 1.0f);
             n = std::pow(n, cfg::NOISE_EXP);
 
-            float h = (float)cfg::MIN_ELEV + n * (float)(cfg::MAX_ELEV - cfg::MIN_ELEV) - cfg::SEA_OFFSET;
+            float h0 = (float)cfg::MIN_ELEV + n * (float)(cfg::MAX_ELEV - cfg::MIN_ELEV);
+            float h = h0 * cfg::HEIGHT_SCALE - cfg::SEA_OFFSET;
             int hi = (int)std::round(h);
+
+            // Mountain chain mask (low-frequency ridged band), warped for continuity
+            {
+                float cx = x * cfg::MNT_MASK_FREQ;
+                float cy = y * cfg::MNT_MASK_FREQ;
+                // Domain warp
+                float wx = (valueNoise2D(cx * 0.5f, cy * 0.5f, seed + 9001u) - 0.5f) * 2.f * cfg::MNT_MASK_WARP;
+                float wy = (valueNoise2D((cx + 5.3f) * 0.5f, (cy - 2.7f) * 0.5f, seed + 1723u) - 0.5f) * 2.f * cfg::MNT_MASK_WARP;
+                float nm = valueNoise2D(cx + wx, cy + wy, seed + 1337u); // [0,1]
+                float mr = 1.f - std::fabs(2.f * nm - 1.f); // ridged band
+                mr = std::clamp(mr, 0.0f, 1.0f);
+                if (mr > cfg::MNT_MASK_THRESH) {
+                    float tmask = (mr - cfg::MNT_MASK_THRESH) / std::max(1e-4f, 1.f - cfg::MNT_MASK_THRESH);
+                    hi += (int)std::round(tmask * cfg::MNT_MASK_STRENGTH);
+                }
+            }
+            // Rare high mountain spikes (only on land)
+            if (hi > 0) {
+                float r = rnd01(i, j, seed + 0xBEEF1234u);
+                if (r < cfg::RARE_PEAK_PROB) {
+                    hi += (int)std::round(cfg::RARE_PEAK_BOOST);
+                }
+            }
             heights[idx(i, j)] = std::clamp(hi, cfg::MIN_ELEV, cfg::MAX_ELEV);
         }
     }

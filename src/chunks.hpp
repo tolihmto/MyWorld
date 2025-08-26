@@ -4,6 +4,7 @@
 #include <list>
 #include <cstdint>
 #include <utility>
+#include <string>
 #include "config.hpp"
 
 // Chunked world primitives
@@ -26,7 +27,13 @@ struct ChunkKeyHash {
 struct Chunk {
     // Heights at grid intersections: (CHUNK_SIZE+1) x (CHUNK_SIZE+1)
     std::vector<int> heights;
-    Chunk() : heights((cfg::CHUNK_SIZE + 1) * (cfg::CHUNK_SIZE + 1), 0) {}
+    // Overrides: if mask[k]!=0, heights[k] has been forced to overrides[k]
+    std::vector<int> overrides;
+    std::vector<uint8_t> overrideMask;
+    Chunk()
+        : heights((cfg::CHUNK_SIZE + 1) * (cfg::CHUNK_SIZE + 1), 0)
+        , overrides((cfg::CHUNK_SIZE + 1) * (cfg::CHUNK_SIZE + 1), 0)
+        , overrideMask((cfg::CHUNK_SIZE + 1) * (cfg::CHUNK_SIZE + 1), 0) {}
     static inline int idx(int i, int j) { return i * (cfg::CHUNK_SIZE + 1) + j; }
 };
 
@@ -47,16 +54,25 @@ public:
     // Get or build chunk at (cx, cy)
     const Chunk& getChunk(int cx, int cy);
 
-    // Clears cache (optional)
-    void clear() { _cache.clear(); _lru.clear(); }
+    // Editing APIs (world coordinates in tile intersections)
+    void applyDeltaAt(int I, int J, int delta);
+    void applySetAt(int I, int J, int value);
+
+    // Clears cache (persists dirty chunks first)
+    void clear();
 
 private:
     Mode _mode;
     uint32_t _seed;
     bool _continents = false;
-    struct Entry { Chunk ch; std::list<ChunkKey>::iterator it; };
+    struct Entry { Chunk ch; bool dirty = false; std::list<ChunkKey>::iterator it; };
     std::unordered_map<ChunkKey, Entry, ChunkKeyHash> _cache;
     std::list<ChunkKey> _lru; // most-recent at front
 
     void generateChunk(Chunk& out, int cx, int cy);
+    // Persistence helpers
+    std::string chunkPath(int cx, int cy) const;
+    void ensureDir() const;
+    void loadOverrides(Chunk& ch, int cx, int cy);
+    void saveOverrides(const Chunk& ch, int cx, int cy);
 };

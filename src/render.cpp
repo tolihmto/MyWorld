@@ -31,13 +31,14 @@ namespace render {
 std::vector<std::vector<sf::Vector2f>> buildProjectedMap(
     const std::vector<int>& heights,
     const IsoParams& iso,
-    const sf::Vector2f& origin)
+    const sf::Vector2f& origin,
+    float heightScale)
 {
     std::vector<std::vector<sf::Vector2f>> map2d(cfg::GRID + 1, std::vector<sf::Vector2f>(cfg::GRID + 1));
     for (int i = 0; i <= cfg::GRID; ++i) {
         for (int j = 0; j <= cfg::GRID; ++j) {
             int h = heights[idx(i, j)];
-            map2d[i][j] = isoProjectDyn((float)i, (float)j, h * cfg::ELEV_STEP, iso) + origin;
+            map2d[i][j] = isoProjectDyn((float)i, (float)j, (h * heightScale) * cfg::ELEV_STEP, iso) + origin;
         }
     }
     return map2d;
@@ -84,7 +85,8 @@ void draw2DMap(sf::RenderTarget& target, const std::vector<std::vector<sf::Vecto
 void draw2DFilledCells(sf::RenderTarget& target,
                        const std::vector<std::vector<sf::Vector2f>>& map2d,
                        const std::vector<int>& heights,
-                       bool enableShadows)
+                       bool enableShadows,
+                       float heightScale)
 {
     int H = (int)map2d.size();
     if (H == 0) return;
@@ -170,35 +172,54 @@ void draw2DFilledCells(sf::RenderTarget& target,
     auto colorForHeight = [&](float h){
         const sf::Color normalBlue(30, 144, 255);
         const sf::Color veryDarkBlue(0, 0, 80);
-        const sf::Color sandYellow(255, 236, 170); // light yellow
+        const sf::Color sandYellow(255, 236, 170);
         const sf::Color grass(34, 139, 34);
         const sf::Color gray(128, 128, 128);
         const sf::Color rock(110, 110, 110);
         const sf::Color snow(245, 245, 245);
 
-        if (h < 0.f && h >= -5.f) {
-            float t = (-h) / 5.f; // 0 -> 0, -5 -> 1
+        // Thresholds per spec (values multiplied by heightScale to remain invariant)
+        float sea0      =  0.f  * heightScale;   // water surface
+        float deepMin   = -100.f * heightScale;  // deep sea lower bound
+        float coast2    =  2.f  * heightScale;   // coast end
+        float beach4    =  4.f  * heightScale;   // beach->grass end
+        float grass6    =  6.f  * heightScale;   // solid grass end
+        float gray10    = 10.f  * heightScale;   // grass->gray end
+        float rock14    = 12.f  * heightScale;   // rock end (lowered)
+        float snow16    = 14.f  * heightScale;   // snow start (lowered)
+
+        // Deep sea gradient: [deepMin .. sea0)
+        if (h < sea0 && h >= deepMin) {
+            float t = (sea0 - h) / std::max(0.001f, (sea0 - deepMin)); // 0 at surface -> 1 at deep
             return lerpColor(normalBlue, veryDarkBlue, t);
         }
-        if (h >= 0.f && h < 1.f) {
-            float t = (h - 0.f) / 1.f; // 0->0, 1->1
+        // 0..2: blue -> sand
+        if (h >= sea0 && h < coast2) {
+            float t = (h - sea0) / std::max(0.001f, (coast2 - sea0));
             return lerpColor(normalBlue, sandYellow, t);
         }
-        if (h >= 1.f && h < 2.f) {
-            float t = (h - 1.f) / 1.f; // 1->0, 2->1
+        // 2..4: sand -> grass
+        if (h >= coast2 && h < beach4) {
+            float t = (h - coast2) / std::max(0.001f, (beach4 - coast2));
             return lerpColor(sandYellow, grass, t);
         }
-        if (h >= 2.f && h < 3.f) return grass;
-        if (h >= 3.f && h <= 5.f) {
-            float t = (h - 3.f) / 2.f; // 3->0, 5->1
+        // 4..6: grass
+        if (h >= beach4 && h < grass6) return grass;
+        // 6..10: grass -> gray
+        if (h >= grass6 && h <= gray10) {
+            float t = (h - grass6) / std::max(0.001f, (gray10 - grass6));
             return lerpColor(grass, gray, t);
         }
-        if (h > 5.f && h <= 7.f) return rock;
-        if (h > 7.f && h < 8.f) {
-            float t = (h - 7.f) / 1.f; // 7->0, 8->1
+        // 10..14: rock
+        if (h > gray10 && h <= rock14) return rock;
+        // 14..16: gray -> snow
+        if (h > rock14 && h < snow16) {
+            float t = (h - rock14) / std::max(0.001f, (snow16 - rock14));
             return lerpColor(gray, snow, t);
         }
-        if (h >= 8.f) return snow;
+        // >= 16: snow
+        if (h >= snow16) return snow;
+        // Fallback
         return grass;
     };
 
@@ -213,22 +234,27 @@ void draw2DFilledCells(sf::RenderTarget& target,
                          c.a);
     };
 
-    // Fast normal using central differences in grid space (z in world units)
-    auto heightAt = [&](int ii, int jj){ return (float)std::clamp(heights[idx(ii, jj)], cfg::MIN_ELEV, cfg::MAX_ELEV) * cfg::ELEV_STEP; };
-    auto normalAt = [&](int ii, int jj){
-        int i0 = std::max(ii - 1, 0), i1 = std::min(ii + 1, H - 1);
-        int j0 = std::max(jj - 1, 0), j1 = std::min(jj + 1, W - 1);
-        float dzdi = (heightAt(i1, jj) - heightAt(i0, jj)) * 0.5f; // slope along i
-        float dzdj = (heightAt(ii, j1) - heightAt(ii, j0)) * 0.5f; // slope along j
-        // Tangents: ti along +i, tj along +j. Normal ~ cross(ti, tj).
-        sf::Vector3f ti(1.f, 0.f, dzdi);
-        sf::Vector3f tj(0.f, 1.f, dzdj);
-        sf::Vector3f n(
-            ti.y * tj.z - ti.z * tj.y,
-            ti.z * tj.x - ti.x * tj.z,
-            ti.x * tj.y - ti.y * tj.x
-        );
-        return norm3(n);
+    // Per-quad normal from local 3D points (avoids cross-chunk dependency)
+    auto quadShade = [&](int i, int j, int stride)->float{
+        // Read raw heights (unclamped to allow > MAX_ELEV visual effect)
+        float hA = (float)heights[idx(i, j)] * heightScale;
+        float hB = (float)heights[idx(std::min(i + stride, H - 1), j)] * heightScale;
+        float hC = (float)heights[idx(std::min(i + stride, H - 1), std::min(j + stride, W - 1))] * heightScale;
+        float hD = (float)heights[idx(i, std::min(j + stride, W - 1))] * heightScale;
+        // 3D points in grid space
+        sf::Vector3f A3((float)i,               (float)j,               hA * cfg::ELEV_STEP);
+        sf::Vector3f B3((float)std::min(i+stride, H-1), (float)j,               hB * cfg::ELEV_STEP);
+        sf::Vector3f C3((float)std::min(i+stride, H-1), (float)std::min(j+stride, W-1), hC * cfg::ELEV_STEP);
+        sf::Vector3f D3((float)i,               (float)std::min(j+stride, W-1), hD * cfg::ELEV_STEP);
+        auto sub = [](sf::Vector3f a, sf::Vector3f b){ return sf::Vector3f(a.x-b.x, a.y-b.y, a.z-b.z); };
+        auto cross = [](sf::Vector3f a, sf::Vector3f b){ return sf::Vector3f(a.y*b.z - a.z*b.y, a.z*b.x - a.x*b.z, a.x*b.y - a.y*b.x); };
+        sf::Vector3f n1 = norm3(cross(sub(B3, A3), sub(C3, A3)));
+        sf::Vector3f n2 = norm3(cross(sub(C3, A3), sub(D3, A3)));
+        float ndotl1 = std::max(0.0f, n1.x * Ldir.x + n1.y * Ldir.y + n1.z * Ldir.z);
+        float ndotl2 = std::max(0.0f, n2.x * Ldir.x + n2.y * Ldir.y + n2.z * Ldir.z);
+        float ndotl = 0.5f * (ndotl1 + ndotl2);
+        // Ambient term
+        return 0.5f + 0.5f * ndotl; // [0.5..1.0]
     };
 
     for (int i = 0; i < H - 1; i += stride) {
@@ -240,16 +266,13 @@ void draw2DFilledCells(sf::RenderTarget& target,
 
             if (!rectsIntersect(quadBounds(A, B, C, D), viewRect)) continue;
 
-            float hA = (float)std::clamp(heights[idx(i, j)], cfg::MIN_ELEV, cfg::MAX_ELEV);
-            float hB = (float)std::clamp(heights[idx(std::min(i + stride, H - 1), j)], cfg::MIN_ELEV, cfg::MAX_ELEV);
-            float hC = (float)std::clamp(heights[idx(std::min(i + stride, H - 1), std::min(j + stride, W - 1))], cfg::MIN_ELEV, cfg::MAX_ELEV);
-            float hD = (float)std::clamp(heights[idx(i, std::min(j + stride, W - 1))], cfg::MIN_ELEV, cfg::MAX_ELEV);
+            float hA = (float)heights[idx(i, j)] * heightScale;
+            float hB = (float)heights[idx(std::min(i + stride, H - 1), j)] * heightScale;
+            float hC = (float)heights[idx(std::min(i + stride, H - 1), std::min(j + stride, W - 1))] * heightScale;
+            float hD = (float)heights[idx(i, std::min(j + stride, W - 1))] * heightScale;
             float hAvg = 0.25f * (hA + hB + hC + hD);
 
-            sf::Vector3f n = normalAt(i, j);
-            float ndotl = std::max(0.0f, n.x * Ldir.x + n.y * Ldir.y + n.z * Ldir.z);
-            // Ensure some ambient term
-            float shade = 0.5f + 0.5f * ndotl; // [0.5..1.0]
+            float shade = quadShade(i, j, stride);
 
             float shadeFinal = shade;
             if (enableShadows) {
@@ -287,7 +310,8 @@ std::vector<std::vector<sf::Vector2f>> buildProjectedMapChunk(
     int S,
     int I0, int J0,
     const IsoParams& iso,
-    const sf::Vector2f& origin)
+    const sf::Vector2f& origin,
+    float heightScale)
 {
     const int W = S + 1;
     auto idc = [&](int i, int j){ return i * W + j; };
@@ -295,7 +319,7 @@ std::vector<std::vector<sf::Vector2f>> buildProjectedMapChunk(
     for (int i = 0; i <= S; ++i) {
         for (int j = 0; j <= S; ++j) {
             int h = heights[idc(i, j)];
-            map2d[i][j] = isoProjectDyn((float)(I0 + i), (float)(J0 + j), h * cfg::ELEV_STEP, iso) + origin;
+            map2d[i][j] = isoProjectDyn((float)(I0 + i), (float)(J0 + j), (h * heightScale) * cfg::ELEV_STEP, iso) + origin;
         }
     }
     return map2d;
@@ -344,7 +368,8 @@ void draw2DFilledCellsChunk(sf::RenderTarget& target,
                             const std::vector<std::vector<sf::Vector2f>>& map2d,
                             const std::vector<int>& heights,
                             int S,
-                            bool enableShadows)
+                            bool enableShadows,
+                            float heightScale)
 {
     int H = (int)map2d.size();
     if (H == 0) return;
@@ -426,31 +451,45 @@ void draw2DFilledCellsChunk(sf::RenderTarget& target,
         const sf::Color gray(128, 128, 128);
         const sf::Color rock(110, 110, 110);
         const sf::Color snow(245, 245, 245);
-        if (h < 0.f && h >= -5.f) { float t = (-h) / 5.f; return lerpColor(normalBlue, veryDarkBlue, t); }
-        if (h >= 0.f && h < 1.f) { float t = (h - 0.f) / 1.f; return lerpColor(normalBlue, sandYellow, t); }
-        if (h >= 1.f && h < 2.f) { float t = (h - 1.f) / 1.f; return lerpColor(sandYellow, grass, t); }
-        if (h >= 2.f && h < 3.f) return grass;
-        if (h >= 3.f && h <= 5.f) { float t = (h - 3.f) / 2.f; return lerpColor(grass, gray, t); }
-        if (h > 5.f && h <= 7.f) return rock;
-        if (h > 7.f && h < 8.f) { float t = (h - 7.f) / 1.f; return lerpColor(gray, snow, t); }
-        if (h >= 8.f) return snow;
+
+        float sea0      =  0.f  * heightScale;
+        float deepMin   = -100.f * heightScale;
+        float coast2    =  2.f  * heightScale;
+        float beach4    =  4.f  * heightScale;
+        float grass6    =  6.f  * heightScale;
+        float gray10    = 10.f  * heightScale;
+        float rock14    = 12.f  * heightScale;
+        float snow16    = 14.f  * heightScale;
+
+        if (h < sea0 && h >= deepMin) { float t = (sea0 - h) / std::max(0.001f, (sea0 - deepMin)); return lerpColor(normalBlue, veryDarkBlue, t); }
+        if (h >= sea0 && h < coast2) { float t = (h - sea0) / std::max(0.001f, (coast2 - sea0)); return lerpColor(normalBlue, sandYellow, t); }
+        if (h >= coast2 && h < beach4) { float t = (h - coast2) / std::max(0.001f, (beach4 - coast2)); return lerpColor(sandYellow, grass, t); }
+        if (h >= beach4 && h < grass6) return grass;
+        if (h >= grass6 && h <= gray10) { float t = (h - grass6) / std::max(0.001f, (gray10 - grass6)); return lerpColor(grass, gray, t); }
+        if (h > gray10 && h <= rock14) return rock;
+        if (h > rock14 && h < snow16) { float t = (h - rock14) / std::max(0.001f, (snow16 - rock14)); return lerpColor(gray, snow, t); }
+        if (h >= snow16) return snow;
         return grass;
     };
 
-    auto heightAt = [&](int ii, int jj){ return (float)std::clamp(heights[idc(ii, jj)], cfg::MIN_ELEV, cfg::MAX_ELEV) * cfg::ELEV_STEP; };
-    auto normalAt = [&](int ii, int jj){
-        int i0 = std::max(ii - 1, 0), i1 = std::min(ii + 1, H - 1);
-        int j0 = std::max(jj - 1, 0), j1 = std::min(jj + 1, W - 1);
-        float dzdi = (heightAt(i1, jj) - heightAt(i0, jj)) * 0.5f;
-        float dzdj = (heightAt(ii, j1) - heightAt(ii, j0)) * 0.5f;
-        sf::Vector3f ti(1.f, 0.f, dzdi);
-        sf::Vector3f tj(0.f, 1.f, dzdj);
-        sf::Vector3f n(
-            ti.y * tj.z - ti.z * tj.y,
-            ti.z * tj.x - ti.x * tj.z,
-            ti.x * tj.y - ti.y * tj.x
-        );
-        return norm3(n);
+    // Per-quad shading in chunk mode
+    auto quadShadeC = [&](int i, int j, int stride)->float{
+        float hA = (float)heights[idc(i, j)] * heightScale;
+        float hB = (float)heights[idc(std::min(i + stride, H - 1), j)] * heightScale;
+        float hC = (float)heights[idc(std::min(i + stride, H - 1), std::min(j + stride, W - 1))] * heightScale;
+        float hD = (float)heights[idc(i, std::min(j + stride, W - 1))] * heightScale;
+        sf::Vector3f A3((float)i,               (float)j,               hA * cfg::ELEV_STEP);
+        sf::Vector3f B3((float)std::min(i+stride, H-1), (float)j,               hB * cfg::ELEV_STEP);
+        sf::Vector3f C3((float)std::min(i+stride, H-1), (float)std::min(j+stride, W-1), hC * cfg::ELEV_STEP);
+        sf::Vector3f D3((float)i,               (float)std::min(j+stride, W-1), hD * cfg::ELEV_STEP);
+        auto sub = [](sf::Vector3f a, sf::Vector3f b){ return sf::Vector3f(a.x-b.x, a.y-b.y, a.z-b.z); };
+        auto cross = [](sf::Vector3f a, sf::Vector3f b){ return sf::Vector3f(a.y*b.z - a.z*b.y, a.z*b.x - a.x*b.z, a.x*b.y - a.y*b.x); };
+        sf::Vector3f n1 = norm3(cross(sub(B3, A3), sub(C3, A3)));
+        sf::Vector3f n2 = norm3(cross(sub(C3, A3), sub(D3, A3)));
+        float ndotl1 = std::max(0.0f, n1.x * Ldir.x + n1.y * Ldir.y + n1.z * Ldir.z);
+        float ndotl2 = std::max(0.0f, n2.x * Ldir.x + n2.y * Ldir.y + n2.z * Ldir.z);
+        float ndotl = 0.5f * (ndotl1 + ndotl2);
+        return 0.5f + 0.5f * ndotl;
     };
 
     sf::VertexArray tris(sf::Triangles);
@@ -461,14 +500,12 @@ void draw2DFilledCellsChunk(sf::RenderTarget& target,
             const sf::Vector2f& C = map2d[std::min(i + stride, H - 1)][std::min(j + stride, W - 1)];
             const sf::Vector2f& D = map2d[i][std::min(j + stride, W - 1)];
             if (!rectsIntersect(quadBounds(A, B, C, D), viewRect)) continue;
-            float hA = (float)std::clamp(heights[idc(i, j)], cfg::MIN_ELEV, cfg::MAX_ELEV);
-            float hB = (float)std::clamp(heights[idc(std::min(i + stride, H - 1), j)], cfg::MIN_ELEV, cfg::MAX_ELEV);
-            float hC = (float)std::clamp(heights[idc(std::min(i + stride, H - 1), std::min(j + stride, W - 1))], cfg::MIN_ELEV, cfg::MAX_ELEV);
-            float hD = (float)std::clamp(heights[idc(i, std::min(j + stride, W - 1))], cfg::MIN_ELEV, cfg::MAX_ELEV);
+            float hA = (float)heights[idc(i, j)] * heightScale;
+            float hB = (float)heights[idc(std::min(i + stride, H - 1), j)] * heightScale;
+            float hC = (float)heights[idc(std::min(i + stride, H - 1), std::min(j + stride, W - 1))] * heightScale;
+            float hD = (float)heights[idc(i, std::min(j + stride, W - 1))] * heightScale;
             float hAvg = 0.25f * (hA + hB + hC + hD);
-            sf::Vector3f n = normalAt(i, j);
-            float ndotl = std::max(0.0f, n.x * Ldir.x + n.y * Ldir.y + n.z * Ldir.z);
-            float shade = 0.5f + 0.5f * ndotl;
+            float shade = quadShadeC(i, j, stride);
             float shadeFinal = shade;
             if (enableShadows) {
                 float sh = 0.f;
