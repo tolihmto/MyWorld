@@ -311,6 +311,8 @@ int main() {
 
     // FPS counter state
     sf::Clock fpsClock;
+    // Frame clock for consistent per-frame delta time
+    sf::Clock frameClock;
     int fpsFrames = 0;
     float fpsValue = 0.f;
     updateTopRightButtons();
@@ -466,8 +468,8 @@ int main() {
     };
     auto sliderThumbRect = [&](int value){
         sf::FloatRect tr = sliderTrackRect();
-        // Map value [brushMin..brushMax] -> y position along track (top=small, bottom=large)
-        float t = (float)(value - brushMin) / (float)(brushMax - brushMin);
+        // Inverted: top = larger brush, bottom = smaller
+        float t = (float)(brushMax - value) / (float)(brushMax - brushMin);
         float thumbH = 18.f, thumbW = 26.f;
         float cx = tr.left + tr.width * 0.5f;
         float y = tr.top + t * tr.height;
@@ -477,7 +479,8 @@ int main() {
         sf::FloatRect tr = sliderTrackRect();
         float clampedY = std::clamp(p.y, tr.top, tr.top + tr.height);
         float t = (tr.height <= 0.f) ? 0.f : (clampedY - tr.top) / tr.height;
-        int v = brushMin + (int)std::round(t * (brushMax - brushMin));
+        // Inverted mapping: top -> brushMax, bottom -> brushMin
+        int v = brushMax - (int)std::round(t * (brushMax - brushMin));
         return std::clamp(v, brushMin, brushMax);
     };
 
@@ -574,16 +577,16 @@ int main() {
                         if (__log) __log << "[" << __now() << "] Reset view (R)" << std::endl;
                     }
                     if (ev.key.code == sf::Keyboard::G) {
-                        // Reveal or hide terrain while staying procedural
+                        // Same as clicking "Générer": reveal terrain and reset user modifications
                         if (!proceduralMode) {
                             proceduralMode = true;
                             proceduralSeed = (uint32_t)std::rand();
                             chunkMgr.setMode(ChunkManager::Mode::Procedural, proceduralSeed);
                             chunkMgr.setContinents(continentsOpt);
-                            if (fontLoaded) seedText.setString("Seed: " + std::to_string(proceduralSeed));
                         }
-                        waterOnly = !waterOnly;
-                        if (__log) __log << "[" << __now() << "] WaterOnly toggle -> " << (waterOnly?"ON":"OFF") << std::endl;
+                        chunkMgr.resetOverrides();
+                        waterOnly = false;
+                        if (fontLoaded) seedText.setString("Seed: " + std::to_string(proceduralSeed));
                     }
                     if (ev.key.code == sf::Keyboard::F3) {
                         showGrid = !showGrid; if (__log) __log << "[" << __now() << "] Grid toggle -> " << (showGrid?"ON":"OFF") << std::endl;
@@ -628,6 +631,8 @@ int main() {
                                 chunkMgr.setMode(ChunkManager::Mode::Procedural, proceduralSeed);
                                 chunkMgr.setContinents(continentsOpt);
                             }
+                            // Reset all user overrides before revealing
+                            chunkMgr.resetOverrides();
                             waterOnly = false;
                             if (fontLoaded) seedText.setString("Seed: " + std::to_string(proceduralSeed));
                             break;
@@ -640,6 +645,8 @@ int main() {
                             continentsOpt = !continentsOpt; if (__log) __log << "[" << __now() << "] Continents toggle -> " << (continentsOpt?"ON":"OFF") << std::endl;
                             if (fontLoaded) btnContinentsText.setString(U8(std::string("Continents: ") + (continentsOpt?"ON":"OFF")));
                             if (proceduralMode) { chunkMgr.setContinents(continentsOpt); }
+                            // On turning continents ON, reinitialize user modifications
+                            if (continentsOpt) { chunkMgr.resetOverrides(); }
                             break;
                         }
                         if (btnReset.getGlobalBounds().contains(screen)) {
@@ -732,7 +739,6 @@ int main() {
                             if (ctrl && ev.mouseButton.button == sf::Mouse::Left) {
                                 // Capture flatten reference height on first Ctrl+click
                                 if (proceduralMode) {
-                                    // Sample from procedural chunk at IJ
                                     auto floorDiv = [](int a, int b){ return (a >= 0) ? (a / b) : ((a - (b - 1)) / b); };
                                     int cx = floorDiv(IJ.x, cfg::CHUNK_SIZE);
                                     int cy = floorDiv(IJ.y, cfg::CHUNK_SIZE);
@@ -741,7 +747,14 @@ int main() {
                                     int lj = IJ.y - cy * cfg::CHUNK_SIZE;
                                     li = std::clamp(li, 0, cfg::CHUNK_SIZE);
                                     lj = std::clamp(lj, 0, cfg::CHUNK_SIZE);
-                                    flattenHeight = ch.heights[li * (cfg::CHUNK_SIZE + 1) + lj];
+                                    int k = li * (cfg::CHUNK_SIZE + 1) + lj;
+                                    if (waterOnly) {
+                                        // Visible surface in water-only: override if present, else sea level (0)
+                                        flattenHeight = (k < (int)ch.overrideMask.size() && ch.overrideMask[k]) ? ch.overrides[k] : 0;
+                                    } else {
+                                        // Terrain visible: use actual procedural height (with overrides already applied in ch.heights)
+                                        flattenHeight = ch.heights[k];
+                                    }
                                 } else {
                                     flattenHeight = heights[idx(IJ.x, IJ.y)];
                                 }
@@ -771,7 +784,23 @@ int main() {
                                         // circular brush shape
                                         if (di*di + dj*dj > brush*brush) continue;
                                         if (proceduralMode) {
-                                            chunkMgr.applyDeltaAt(I, J, delta);
+                                            if (waterOnly) {
+                                                // Start from sea (0) unless an override exists
+                                                auto floorDiv = [](int a, int b){ return (a >= 0) ? (a / b) : ((a - (b - 1)) / b); };
+                                                int cx = floorDiv(I, cfg::CHUNK_SIZE);
+                                                int cy = floorDiv(J, cfg::CHUNK_SIZE);
+                                                const Chunk& ch = chunkMgr.getChunk(cx, cy);
+                                                int li = I - cx * cfg::CHUNK_SIZE;
+                                                int lj = J - cy * cfg::CHUNK_SIZE;
+                                                li = std::clamp(li, 0, cfg::CHUNK_SIZE);
+                                                lj = std::clamp(lj, 0, cfg::CHUNK_SIZE);
+                                                int k = li * (cfg::CHUNK_SIZE + 1) + lj;
+                                                int base = (k < (int)ch.overrideMask.size() && ch.overrideMask[k]) ? ch.overrides[k] : 0;
+                                                int v = std::clamp(base + delta, cfg::MIN_ELEV, cfg::MAX_ELEV);
+                                                chunkMgr.applySetAt(I, J, v);
+                                            } else {
+                                                chunkMgr.applyDeltaAt(I, J, delta);
+                                            }
                                         } else {
                                             heights[idx(I, J)] += delta;
                                         }
@@ -841,7 +870,23 @@ int main() {
                                                 if (!proceduralMode) { if (I < 0 || J < 0 || I > cfg::GRID || J > cfg::GRID) continue; }
                                                 if (di*di + dj*dj > brush*brush) continue;
                                                 if (proceduralMode) {
-                                                    chunkMgr.applyDeltaAt(I, J, delta);
+                                                    if (waterOnly) {
+                                                        // Start from sea (0) unless an override exists
+                                                        auto floorDiv = [](int a, int b){ return (a >= 0) ? (a / b) : ((a - (b - 1)) / b); };
+                                                        int cx = floorDiv(I, cfg::CHUNK_SIZE);
+                                                        int cy = floorDiv(J, cfg::CHUNK_SIZE);
+                                                        const Chunk& ch = chunkMgr.getChunk(cx, cy);
+                                                        int li = I - cx * cfg::CHUNK_SIZE;
+                                                        int lj = J - cy * cfg::CHUNK_SIZE;
+                                                        li = std::clamp(li, 0, cfg::CHUNK_SIZE);
+                                                        lj = std::clamp(lj, 0, cfg::CHUNK_SIZE);
+                                                        int k = li * (cfg::CHUNK_SIZE + 1) + lj;
+                                                        int base = (k < (int)ch.overrideMask.size() && ch.overrideMask[k]) ? ch.overrides[k] : 0;
+                                                        int v = std::clamp(base + delta, cfg::MIN_ELEV, cfg::MAX_ELEV);
+                                                        chunkMgr.applySetAt(I, J, v);
+                                                    } else {
+                                                        chunkMgr.applyDeltaAt(I, J, delta);
+                                                    }
                                                 } else {
                                                     heights[idx(I, J)] += delta;
                                                 }
@@ -936,13 +981,15 @@ int main() {
         }
 
         // Keyboard panning
-        const float panSpeedBase = 300.f; // base world units per second at default zoom
+        const float panSpeedBase = 600.f; // doubled speed: base world units per second at default zoom
         // Scale speed with zoom level: larger view size => faster pan
         sf::Vector2f viewSize = view.getSize();
         sf::Vector2f defSize  = window.getDefaultView().getSize();
         float zoomScale = std::max(viewSize.x / std::max(1.f, defSize.x), viewSize.y / std::max(1.f, defSize.y));
         float panSpeed = panSpeedBase * std::max(0.1f, zoomScale);
-        float dt = 1.f / 120.f; // approximate since we set framerate limit; could use clock for precision
+        // Real delta time to keep speed consistent across refresh rates/fullscreen
+        float dt = frameClock.restart().asSeconds();
+        dt = std::clamp(dt, 0.0005f, 0.05f); // clamp to avoid spikes
         sf::Vector2f move(0.f, 0.f);
         auto key = [&](sf::Keyboard::Key k){ return sf::Keyboard::isKeyPressed(k); };
         if (key(sf::Keyboard::W) || key(sf::Keyboard::Up)    || key(sf::Keyboard::Z)) move.y -= panSpeed * dt; // ZQSD alias

@@ -1,8 +1,0 @@
-[2025-08-26 10:36:35] main() start
-[2025-08-26 10:36:35] creating window
-Setting vertical sync not supported
-[2025-08-26 10:36:36] window created: 1
-[2025-08-26 10:36:36] fontLoaded=true
-[2025-08-26 10:36:36] exportLoaded=true, importLoaded=true
-[2025-08-26 10:36:36] entering main loop
-[2025-08-26 10:37:40] main loop ended, exiting cleanly

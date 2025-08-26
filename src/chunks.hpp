@@ -61,6 +61,11 @@ public:
     // Clears cache (persists dirty chunks first)
     void clear();
 
+    // Reset all user overrides for the current world (seed/continents):
+    // - Deletes persisted override files under maps/seed_<seed>[_cont]
+    // - Clears in-memory overrides and cache WITHOUT saving
+    void resetOverrides();
+
 private:
     Mode _mode;
     uint32_t _seed;

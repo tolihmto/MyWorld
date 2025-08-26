@@ -25,6 +25,20 @@ void ChunkManager::clear() {
     _lru.clear();
 }
 
+void ChunkManager::resetOverrides() {
+    // Delete persisted overrides directory for current seed/continents
+    std::ostringstream oss;
+    oss << "maps/seed_" << _seed;
+    if (_continents) oss << "_cont";
+    fs::path dir(oss.str());
+    std::error_code ec;
+    fs::remove_all(dir, ec); // ignore errors
+
+    // Clear in-memory cache WITHOUT saving dirty chunks
+    _cache.clear();
+    _lru.clear();
+}
+
 const Chunk& ChunkManager::getChunk(int cx, int cy) {
     ChunkKey key{cx, cy};
     auto it = _cache.find(key);
