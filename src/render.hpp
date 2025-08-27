@@ -1,6 +1,8 @@
 #pragma once
 #include <SFML/Graphics.hpp>
 #include <vector>
+#include <unordered_map>
+#include <unordered_set>
 #include "iso.hpp"
 
 namespace render {
@@ -17,7 +19,10 @@ namespace render {
                            const std::vector<std::vector<sf::Vector2f>>& map2d,
                            const std::vector<int>& heights,
                            bool enableShadows,
-                           float heightScale);
+                           float heightScale,
+                           const std::unordered_map<long long, sf::Color>* paintedCells = nullptr,
+                           const std::unordered_set<long long>* hoverMask = nullptr,
+                           const sf::Color* hoverColor = nullptr);
 
     // --- Per-chunk rendering (arbitrary size S=(side-1)) ---
     std::vector<std::vector<sf::Vector2f>> buildProjectedMapChunk(
@@ -36,5 +41,10 @@ namespace render {
                                 const std::vector<int>& heights,
                                 int S,
                                 bool enableShadows,
-                                float heightScale);
+                                float heightScale,
+                                int I0 = 0, int J0 = 0,
+                                const std::unordered_map<long long, sf::Color>* paintedCells = nullptr,
+                                const std::unordered_set<long long>* hoverMask = nullptr,
+                                const sf::Color* hoverColor = nullptr);
 }
+

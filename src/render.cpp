@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <unordered_map>
 
 namespace {
     inline int idx(int i, int j) { return i * (cfg::GRID + 1) + j; }
@@ -86,7 +87,10 @@ void draw2DFilledCells(sf::RenderTarget& target,
                        const std::vector<std::vector<sf::Vector2f>>& map2d,
                        const std::vector<int>& heights,
                        bool enableShadows,
-                       float heightScale)
+                       float heightScale,
+                       const std::unordered_map<long long, sf::Color>* paintedCells,
+                       const std::unordered_set<long long>* hoverMask,
+                       const sf::Color* hoverColor)
 {
     int H = (int)map2d.size();
     if (H == 0) return;
@@ -287,7 +291,28 @@ void draw2DFilledCells(sf::RenderTarget& target,
                 shadeFinal = shade * shadowFactor;
             }
 
+            // Base color: painted overrides height; then apply hover tint if requested
             sf::Color base = colorForHeight(hAvg);
+            long long key = (((long long)i) << 32) ^ (unsigned long long)(uint32_t)j;
+            if (paintedCells) {
+                auto it = paintedCells->find(key);
+                if (it != paintedCells->end()) base = it->second;
+            }
+            if (hoverMask && hoverColor) {
+                if (hoverMask->find(key) != hoverMask->end()) {
+                    // Blend 70% base with 30% hover color to indicate hover, keeping base alpha
+                    auto blend = [&](sf::Color a, sf::Color b){
+                        float t = 0.3f;
+                        return sf::Color(
+                            (uint8_t)std::round(a.r*(1-t) + b.r*t),
+                            (uint8_t)std::round(a.g*(1+t*-1) + b.g*t),
+                            (uint8_t)std::round(a.b*(1-t) + b.b*t),
+                            a.a
+                        );
+                    };
+                    base = blend(base, *hoverColor);
+                }
+            }
             sf::Color c = multColor(base, shadeFinal);
 
             // Two triangles: A-B-C and A-C-D
@@ -369,7 +394,11 @@ void draw2DFilledCellsChunk(sf::RenderTarget& target,
                             const std::vector<int>& heights,
                             int S,
                             bool enableShadows,
-                            float heightScale)
+                            float heightScale,
+                            int I0, int J0,
+                            const std::unordered_map<long long, sf::Color>* paintedCells,
+                            const std::unordered_set<long long>* hoverMask,
+                            const sf::Color* hoverColor)
 {
     int H = (int)map2d.size();
     if (H == 0) return;
@@ -517,7 +546,24 @@ void draw2DFilledCellsChunk(sf::RenderTarget& target,
                 float shadowFactor = 1.0f - 0.35f * sh;
                 shadeFinal = shade * shadowFactor;
             }
+            // Prefer painted color for world cell (I0+i, J0+j); then apply hover tint if inside hoverMask
             auto base = colorForHeight(hAvg);
+            long long key = (((long long)(I0 + i)) << 32) ^ (unsigned long long)(uint32_t)(J0 + j);
+            if (paintedCells) {
+                auto it = paintedCells->find(key);
+                if (it != paintedCells->end()) base = it->second;
+            }
+            if (hoverMask && hoverColor) {
+                if (hoverMask->find(key) != hoverMask->end()) {
+                    float t = 0.3f;
+                    base = sf::Color(
+                        (uint8_t)std::round(base.r*(1-t) + hoverColor->r*t),
+                        (uint8_t)std::round(base.g*(1-t) + hoverColor->g*t),
+                        (uint8_t)std::round(base.b*(1-t) + hoverColor->b*t),
+                        base.a
+                    );
+                }
+            }
             auto c = multColor(base, shadeFinal);
             tris.append(sf::Vertex(A, c));
             tris.append(sf::Vertex(B, c));

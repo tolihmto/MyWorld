@@ -7,6 +7,9 @@
 #include <string>
 #include <fstream>
 #include <sstream>
+#include <unordered_map>
+#include <unordered_set>
+#include <tuple>
 #include <cstdio>
 #include <iostream>
 #include <chrono>
@@ -243,6 +246,121 @@ int main() {
     const int brushMin = 1;
     const int brushMax = 8;
     bool brushDragging = false;
+    
+    // Tools / Inventory bar (bottom-center)
+    enum class Tool { Bulldozer, Brush, Eraser };
+    Tool currentTool = Tool::Bulldozer;
+    // Inventory UI assets
+    sf::Texture texBrush, texBulldozer, texEraser;
+    sf::Sprite  sprBrush, sprBulldozer, sprEraser;
+    bool brushIconLoaded = texBrush.loadFromFile("assets/images/pinceau.png");
+    bool bulldozerIconLoaded = texBulldozer.loadFromFile("assets/images/pelle-excavatrice.png");
+    bool eraserIconLoaded = texEraser.loadFromFile("assets/images/gomme.png");
+    if (brushIconLoaded)  { sprBrush.setTexture(texBrush);      auto ts=texBrush.getSize();      if (ts.x>0&&ts.y>0) sprBrush.setScale(32.f/(float)ts.x, 32.f/(float)ts.y); }
+    if (bulldozerIconLoaded){ sprBulldozer.setTexture(texBulldozer);auto ts=texBulldozer.getSize();if (ts.x>0&&ts.y>0) sprBulldozer.setScale(32.f/(float)ts.x, 32.f/(float)ts.y); }
+    if (eraserIconLoaded){ sprEraser.setTexture(texEraser);    auto ts=texEraser.getSize();    if (ts.x>0&&ts.y>0) sprEraser.setScale(32.f/(float)ts.x, 32.f/(float)ts.y); }
+    auto inventoryRects = [&](){
+        // Return three 32x32 rects centered at bottom
+        auto sz = window.getSize(); float w=(float)sz.x, h=(float)sz.y;
+        float box = 32.f; float gap = 16.f; float total = box*3.f + gap*2.f;
+        float x0 = w*0.5f - total*0.5f; float y = h - 20.f - box; // 20px margin from bottom
+        sf::FloatRect rBulldozer(x0, y, box, box);
+        sf::FloatRect rBrush(x0 + (box + gap)*1.f, y, box, box);
+        sf::FloatRect rEraser(x0 + (box + gap)*2.f, y, box, box);
+        return std::tuple<sf::FloatRect,sf::FloatRect,sf::FloatRect>(rBulldozer, rBrush, rEraser);
+    };
+
+    // Painting overlay: per world cell (I,J) -> color
+    struct IJKey { int I; int J; };
+    auto key64 = [](int I, int J)->long long { return ( (long long)I << 32) ^ (unsigned long long)(uint32_t)J; };
+    std::unordered_map<long long, sf::Color> paintedCells;
+    bool showColorHover = false;
+
+    // Color picker (left, below buttons)
+    sf::Color selectedColor = sf::Color::White;
+    std::vector<sf::Color> colorHistory; // newest first, max 5
+    const int colorWheelRadius = 60; // fits within 140px panel width
+    bool colorWheelReady = false;
+    sf::Texture colorWheelTex;
+    sf::Sprite  colorWheelSpr;
+    bool showColorPicker = false; // hidden by default, shown in Brush tool
+    // Tone slider (white <-> color <-> black)
+    float colorToneT = 0.5f; // 0=white, 0.5=selectedColor, 1=black
+    bool  toneDragging = false;
+    bool  toneTexReady = false;
+    sf::Texture toneTex; // 1xW gradient, scaled in draw
+    sf::Sprite  toneSpr;
+    sf::Color   activeColor = selectedColor; // final color after tone applied
+    auto lerpColor = [](sf::Color a, sf::Color b, float t){
+        auto L = [&](sf::Uint8 u, sf::Uint8 v){ return (sf::Uint8)std::clamp((int)std::round(u + (v - u) * t), 0, 255); };
+        return sf::Color(L(a.r,b.r), L(a.g,b.g), L(a.b,b.b), 255);
+    };
+    auto applyTone = [&](sf::Color base, float t)->sf::Color{
+        t = std::clamp(t, 0.f, 1.f);
+        if (t < 0.5f) {
+            float k = t * 2.f; // 0..1
+            return lerpColor(sf::Color::White, base, k);
+        } else {
+            float k = (t - 0.5f) * 2.f; // 0..1
+            return lerpColor(base, sf::Color::Black, k);
+        }
+    };
+    auto rebuildToneTex = [&](){
+        const int W = 140; // panel width
+        sf::Image img; img.create(W, 1, sf::Color::Transparent);
+        for (int x=0; x<W; ++x) {
+            float t = (W<=1) ? 0.f : (float)x / (float)(W-1);
+            img.setPixel(x, 0, applyTone(selectedColor, t));
+        }
+        toneTex.loadFromImage(img);
+        toneSpr.setTexture(toneTex);
+        toneTexReady = true;
+    };
+    auto hsv2rgb = [](float h, float s, float v)->sf::Color{
+        h = std::fmod(std::fabs(h), 360.f);
+        float c = v * s;
+        float x = c * (1 - std::fabs(std::fmod(h/60.f, 2.f) - 1));
+        float m = v - c;
+        float r=0,g=0,b=0;
+        if (h < 60)      { r=c; g=x; b=0; }
+        else if (h < 120){ r=x; g=c; b=0; }
+        else if (h < 180){ r=0; g=c; b=x; }
+        else if (h < 240){ r=0; g=x; b=c; }
+        else if (h < 300){ r=x; g=0; b=c; }
+        else             { r=c; g=0; b=x; }
+        auto to8 = [&](float f){ int u = (int)std::round((f + m) * 255.f); return (sf::Uint8)std::clamp(u, 0, 255); };
+        return sf::Color(to8(r), to8(g), to8(b));
+    };
+    auto ensureColorWheel = [&](){
+        if (colorWheelReady) return;
+        const int D = colorWheelRadius * 2;
+        sf::Image img; img.create(D, D, sf::Color(0,0,0,0));
+        sf::Vector2f c((float)colorWheelRadius, (float)colorWheelRadius);
+        for (int y=0; y<D; ++y){
+            for (int x=0; x<D; ++x){
+                float dx = x - c.x;
+                float dy = y - c.y;
+                float r = std::sqrt(dx*dx + dy*dy);
+                if (r <= colorWheelRadius) {
+                    float angle = std::atan2(dy, dx) * 180.f / 3.14159265f; // [-180,180]
+                    if (angle < 0) angle += 360.f;
+                    float s = std::clamp(r / (float)colorWheelRadius, 0.f, 1.f);
+                    sf::Color col = hsv2rgb(angle, s, 1.f);
+                    img.setPixel(x, y, col);
+                }
+            }
+        }
+        colorWheelTex.loadFromImage(img);
+        colorWheelSpr.setTexture(colorWheelTex);
+        colorWheelReady = true;
+    };
+    auto pushHistory = [&](sf::Color c){
+        // Remove duplicates of c, then push front, cap to 5
+        auto it = std::remove_if(colorHistory.begin(), colorHistory.end(), [&](const sf::Color& k){return k==c;});
+        colorHistory.erase(it, colorHistory.end());
+        colorHistory.insert(colorHistory.begin(), c);
+        if (colorHistory.size() > 5) colorHistory.resize(5);
+    };
     
     // Terrain height slider removed; fixed scale used in rendering
     // Painting throttle (Option A): apply brush at fixed cadence independent of event rate
@@ -549,6 +667,31 @@ int main() {
         return (ij.x >= 0.f && ij.y >= 0.f && ij.x <= (float)cfg::GRID && ij.y <= (float)cfg::GRID);
     };
 
+    // Query elevation at an intersection (I,J), accounting for mode and visibility settings
+    auto getIntersectionHeight = [&](int I, int J)->int {
+        if (proceduralMode) {
+            auto floorDiv = [](int a, int b){ return (a >= 0) ? (a / b) : ((a - (b - 1)) / b); };
+            int cx = floorDiv(I, cfg::CHUNK_SIZE);
+            int cy = floorDiv(J, cfg::CHUNK_SIZE);
+            const Chunk& ch = chunkMgr.getChunk(cx, cy);
+            int li = I - cx * cfg::CHUNK_SIZE;
+            int lj = J - cy * cfg::CHUNK_SIZE;
+            li = std::clamp(li, 0, cfg::CHUNK_SIZE);
+            lj = std::clamp(lj, 0, cfg::CHUNK_SIZE);
+            int k = li * (cfg::CHUNK_SIZE + 1) + lj;
+            if (waterOnly) {
+                // Visible surface in water-only: override if present, else sea level (0)
+                return (k < (int)ch.overrideMask.size() && ch.overrideMask[k]) ? ch.overrides[k] : 0;
+            } else {
+                return ch.heights[k];
+            }
+        } else {
+            int iC = std::clamp(I, 0, cfg::GRID);
+            int jC = std::clamp(J, 0, cfg::GRID);
+            return heights[idx(iC, jC)];
+        }
+    };
+
     // Rendering moved to render::*
 
     // Main loop
@@ -607,7 +750,7 @@ int main() {
                         float newScale = curScale * desired;
                         float apply = desired;
                         if (newScale < minZoom) apply = std::max(0.01f, minZoom / std::max(0.01f, curScale));
-                        if (newScale > maxZoom) apply = std::max(0.01f, maxZoom / std::max(0.01f, curScale));
+                        if (newScale > maxZoom) apply = std::max(0.01f, maxZoom / std::max(1.f, curScale));
                         if (std::fabs(apply - 1.f) > 1e-4f) {
                             view.zoom(apply);
                             window.setView(view);
@@ -623,6 +766,89 @@ int main() {
                         sf::Vector2i mp = sf::Mouse::getPosition(window);
                         // First, check UI button in screen space (use default view)
                         sf::Vector2f screen = window.mapPixelToCoords(mp, window.getDefaultView());
+                        // Inventory clicks (bottom center)
+                        {
+                            auto [rBull, rBrush, rEraser] = inventoryRects();
+                            if (rBull.contains(screen)) {
+                                currentTool = Tool::Bulldozer;
+                                showColorPicker = false;
+                                showColorHover = false;
+                                break;
+                            }
+                            if (rBrush.contains(screen)) {
+                                currentTool = Tool::Brush;
+                                showColorPicker = true;
+                                showColorHover = true;
+                                break;
+                            }
+                            if (rEraser.contains(screen)) {
+                                currentTool = Tool::Eraser;
+                                showColorPicker = false;
+                                showColorHover = false;
+                                break;
+                            }
+                        }
+                        // Color picker interactions (left column below buttons)
+                        if (showColorPicker) {
+                            ensureColorWheel();
+                            // Compute wheel center under bake button
+                            float leftX = 16.f;
+                            float panelW = 140.f;
+                            float wheelTop = btnBake.getPosition().y + btnBake.getSize().y + 16.f;
+                            sf::Vector2f wheelCenter(leftX + panelW*0.5f, wheelTop + (float)colorWheelRadius);
+                            sf::FloatRect wheelRect(wheelCenter.x - colorWheelRadius, wheelCenter.y - colorWheelRadius, (float)colorWheelRadius*2, (float)colorWheelRadius*2);
+                            bool handledPick = false;
+                            if (wheelRect.contains(screen)) {
+                                sf::Vector2f p = screen - wheelCenter;
+                                float r = std::sqrt(p.x*p.x + p.y*p.y);
+                                if (r <= (float)colorWheelRadius) {
+                                    float angle = std::atan2(p.y, p.x) * 180.f / 3.14159265f; if (angle < 0) angle += 360.f;
+                                    float s = std::clamp(r / (float)colorWheelRadius, 0.f, 1.f);
+                                    selectedColor = hsv2rgb(angle, s, 1.f);
+                                    pushHistory(selectedColor);
+                                    rebuildToneTex();
+                                    activeColor = applyTone(selectedColor, colorToneT);
+                                    handledPick = true;
+                                }
+                            }
+                            // History swatches (5)
+                            if (!handledPick) {
+                                const int N = 5; float sw = 22.f, sh = 22.f, gap = 6.f;
+                                float totalW = N*sw + (N-1)*gap;
+                                float hx = leftX + (panelW - totalW) * 0.5f;
+                                float hy = wheelRect.top + wheelRect.height + 12.f;
+                                for (int i=0; i<(int)colorHistory.size() && i<N; ++i){
+                                    sf::FloatRect rct(hx + i*(sw+gap), hy, sw, sh);
+                                    if (rct.contains(screen)) {
+                                        selectedColor = colorHistory[i];
+                                        // Move selected to front
+                                        pushHistory(selectedColor);
+                                        rebuildToneTex();
+                                        activeColor = applyTone(selectedColor, colorToneT);
+                                        handledPick = true;
+                                        break;
+                                    }
+                                }
+                            }
+                            // Tone slider interaction
+                            if (!handledPick) {
+                                const float toneH = 18.f; const float tonePad = 12.f;
+                                const int N = 5; float sw = 22.f, sh = 22.f, gap = 6.f;
+                                float totalW = N*sw + (N-1)*gap;
+                                float hx = leftX + (panelW - totalW) * 0.5f;
+                                float hy = wheelRect.top + wheelRect.height + 12.f; // history y
+                                float toneY = hy + sh + tonePad;
+                                sf::FloatRect toneRect(leftX, toneY, panelW, toneH);
+                                if (toneRect.contains(screen)) {
+                                    float t = (screen.x - toneRect.left) / toneRect.width;
+                                    colorToneT = std::clamp(t, 0.f, 1.f);
+                                    activeColor = applyTone(selectedColor, colorToneT);
+                                    toneDragging = true;
+                                    handledPick = true;
+                                }
+                            }
+                            if (handledPick) break; // consume click if we picked a color
+                        }
                         if (btnGenerate.getGlobalBounds().contains(screen)) {
                             // Reveal terrain from water-only
                             if (!proceduralMode) {
@@ -722,6 +948,30 @@ int main() {
                             if (!path.empty()) beginImport(path);
                             break;
                         }
+                        // Inventory toolbar (bottom-center) click detection
+                        {
+                            auto [rBulldozer, rBrush, rEraser] = inventoryRects();
+                            if (rBulldozer.contains(screen)) {
+                                currentTool = Tool::Bulldozer;
+                                showColorPicker = false;
+                                showColorHover = false;
+                                toneDragging = false;
+                                break;
+                            }
+                            if (rBrush.contains(screen)) {
+                                currentTool = Tool::Brush;
+                                showColorPicker = true;
+                                showColorHover = true;
+                                break;
+                            }
+                            if (rEraser.contains(screen)) {
+                                currentTool = Tool::Eraser;
+                                showColorPicker = false;
+                                showColorHover = false;
+                                toneDragging = false;
+                                break;
+                            }
+                        }
                         // (height slider removed)
                         // Brush slider interaction (right side)
                         if (sliderTrackRect().contains(screen) || sliderThumbRect(brushSize).contains(screen)) {
@@ -732,81 +982,97 @@ int main() {
                         // Then, world interactions
                         sf::Vector2f world = window.mapPixelToCoords(mp, view);
                         if (pointInsideGrid(world)) {
-                            // Elevation edit around nearest intersection (brush)
+                            // Tool-dependent action on press
                             sf::Vector2i IJ = worldToGridIntersection(world);
                             int brush = std::clamp(brushSize, brushMin, brushMax);
                             bool ctrl = sf::Keyboard::isKeyPressed(sf::Keyboard::LControl) || sf::Keyboard::isKeyPressed(sf::Keyboard::RControl);
-                            if (ctrl && ev.mouseButton.button == sf::Mouse::Left) {
-                                // Capture flatten reference height on first Ctrl+click
-                                if (proceduralMode) {
-                                    auto floorDiv = [](int a, int b){ return (a >= 0) ? (a / b) : ((a - (b - 1)) / b); };
-                                    int cx = floorDiv(IJ.x, cfg::CHUNK_SIZE);
-                                    int cy = floorDiv(IJ.y, cfg::CHUNK_SIZE);
-                                    const Chunk& ch = chunkMgr.getChunk(cx, cy);
-                                    int li = IJ.x - cx * cfg::CHUNK_SIZE;
-                                    int lj = IJ.y - cy * cfg::CHUNK_SIZE;
-                                    li = std::clamp(li, 0, cfg::CHUNK_SIZE);
-                                    lj = std::clamp(lj, 0, cfg::CHUNK_SIZE);
-                                    int k = li * (cfg::CHUNK_SIZE + 1) + lj;
-                                    if (waterOnly) {
-                                        // Visible surface in water-only: override if present, else sea level (0)
-                                        flattenHeight = (k < (int)ch.overrideMask.size() && ch.overrideMask[k]) ? ch.overrides[k] : 0;
+                            if (currentTool == Tool::Bulldozer) {
+                                // Elevation edit around nearest intersection (brush)
+                                if (ctrl && (ev.mouseButton.button == sf::Mouse::Left || ev.mouseButton.button == sf::Mouse::Right)) {
+                                    // Capture flatten reference height on first Ctrl+click
+                                    if (proceduralMode) {
+                                        auto floorDiv = [](int a, int b){ return (a >= 0) ? (a / b) : ((a - (b - 1)) / b); };
+                                        int cx = floorDiv(IJ.x, cfg::CHUNK_SIZE);
+                                        int cy = floorDiv(IJ.y, cfg::CHUNK_SIZE);
+                                        const Chunk& ch = chunkMgr.getChunk(cx, cy);
+                                        int li = IJ.x - cx * cfg::CHUNK_SIZE;
+                                        int lj = IJ.y - cy * cfg::CHUNK_SIZE;
+                                        li = std::clamp(li, 0, cfg::CHUNK_SIZE);
+                                        lj = std::clamp(lj, 0, cfg::CHUNK_SIZE);
+                                        int k = li * (cfg::CHUNK_SIZE + 1) + lj;
+                                        if (waterOnly) {
+                                            // Visible surface in water-only: override if present, else sea level (0)
+                                            flattenHeight = (k < (int)ch.overrideMask.size() && ch.overrideMask[k]) ? ch.overrides[k] : 0;
+                                        } else {
+                                            // Terrain visible: use actual procedural height (with overrides already applied in ch.heights)
+                                            flattenHeight = ch.heights[k];
+                                        }
                                     } else {
-                                        // Terrain visible: use actual procedural height (with overrides already applied in ch.heights)
-                                        flattenHeight = ch.heights[k];
+                                        flattenHeight = heights[idx(IJ.x, IJ.y)];
+                                    }
+                                    flattenPrimed = true;
+                                    // Immediately flatten current brush area (square brush)
+                                    int half = brush - 1;
+                                    for (int di = -brush; di <= brush; ++di) {
+                                        for (int dj = -brush; dj <= brush; ++dj) {
+                                            int I = IJ.x + di;
+                                            int J = IJ.y + dj;
+                                            if (!proceduralMode) { if (I < 0 || J < 0 || I > cfg::GRID || J > cfg::GRID) continue; }
+                                            if (std::max(std::abs(di), std::abs(dj)) > half) continue;
+                                            if (proceduralMode) {
+                                                chunkMgr.applySetAt(I, J, flattenHeight);
+                                            } else {
+                                                heights[idx(I, J)] = flattenHeight;
+                                            }
+                                        }
                                     }
                                 } else {
-                                    flattenHeight = heights[idx(IJ.x, IJ.y)];
-                                }
-                                flattenPrimed = true;
-                                // Immediately flatten current brush area
-                                for (int di = -brush; di <= brush; ++di) {
-                                    for (int dj = -brush; dj <= brush; ++dj) {
-                                        int I = IJ.x + di;
-                                        int J = IJ.y + dj;
-                                        if (!proceduralMode) { if (I < 0 || J < 0 || I > cfg::GRID || J > cfg::GRID) continue; }
-                                        if (di*di + dj*dj > brush*brush) continue;
-                                        if (proceduralMode) {
-                                            chunkMgr.applySetAt(I, J, flattenHeight);
-                                        } else {
-                                            heights[idx(I, J)] = flattenHeight;
-                                        }
-                                    }
-                                }
-                                
-                            } else {
-                                int delta = (ev.mouseButton.button == sf::Mouse::Left) ? 1 : -1;
-                                for (int di = -brush; di <= brush; ++di) {
-                                    for (int dj = -brush; dj <= brush; ++dj) {
-                                        int I = IJ.x + di;
-                                        int J = IJ.y + dj;
-                                        if (!proceduralMode) { if (I < 0 || J < 0 || I > cfg::GRID || J > cfg::GRID) continue; }
-                                        // circular brush shape
-                                        if (di*di + dj*dj > brush*brush) continue;
-                                        if (proceduralMode) {
-                                            if (waterOnly) {
-                                                // Start from sea (0) unless an override exists
-                                                auto floorDiv = [](int a, int b){ return (a >= 0) ? (a / b) : ((a - (b - 1)) / b); };
-                                                int cx = floorDiv(I, cfg::CHUNK_SIZE);
-                                                int cy = floorDiv(J, cfg::CHUNK_SIZE);
-                                                const Chunk& ch = chunkMgr.getChunk(cx, cy);
-                                                int li = I - cx * cfg::CHUNK_SIZE;
-                                                int lj = J - cy * cfg::CHUNK_SIZE;
-                                                li = std::clamp(li, 0, cfg::CHUNK_SIZE);
-                                                lj = std::clamp(lj, 0, cfg::CHUNK_SIZE);
-                                                int k = li * (cfg::CHUNK_SIZE + 1) + lj;
-                                                int base = (k < (int)ch.overrideMask.size() && ch.overrideMask[k]) ? ch.overrides[k] : 0;
-                                                int v = std::clamp(base + delta, cfg::MIN_ELEV, cfg::MAX_ELEV);
-                                                chunkMgr.applySetAt(I, J, v);
+                                    int delta = (ev.mouseButton.button == sf::Mouse::Left) ? 1 : -1;
+                                    int half = brush - 1;
+                                    for (int di = -brush; di <= brush; ++di) {
+                                        for (int dj = -brush; dj <= brush; ++dj) {
+                                            int I = IJ.x + di;
+                                            int J = IJ.y + dj;
+                                            if (!proceduralMode) { if (I < 0 || J < 0 || I > cfg::GRID || J > cfg::GRID) continue; }
+                                            // square brush shape (Chebyshev radius)
+                                            if (std::max(std::abs(di), std::abs(dj)) > (brush - 1)) continue;
+                                            if (proceduralMode) {
+                                                if (waterOnly) {
+                                                    // Start from sea (0) unless an override exists
+                                                    auto floorDiv = [](int a, int b){ return (a >= 0) ? (a / b) : ((a - (b - 1)) / b); };
+                                                    int cx = floorDiv(I, cfg::CHUNK_SIZE);
+                                                    int cy = floorDiv(J, cfg::CHUNK_SIZE);
+                                                    const Chunk& ch = chunkMgr.getChunk(cx, cy);
+                                                    int li = I - cx * cfg::CHUNK_SIZE;
+                                                    int lj = J - cy * cfg::CHUNK_SIZE;
+                                                    li = std::clamp(li, 0, cfg::CHUNK_SIZE);
+                                                    lj = std::clamp(lj, 0, cfg::CHUNK_SIZE);
+                                                    int k = li * (cfg::CHUNK_SIZE + 1) + lj;
+                                                    int base = (k < (int)ch.overrideMask.size() && ch.overrideMask[k]) ? ch.overrides[k] : 0;
+                                                    int v = std::clamp(base + delta, cfg::MIN_ELEV, cfg::MAX_ELEV);
+                                                    chunkMgr.applySetAt(I, J, v);
+                                                } else {
+                                                    chunkMgr.applyDeltaAt(I, J, delta);
+                                                }
                                             } else {
-                                                chunkMgr.applyDeltaAt(I, J, delta);
+                                                heights[idx(I, J)] += delta;
                                             }
-                                        } else {
-                                            heights[idx(I, J)] += delta;
                                         }
                                     }
                                 }
-                                
+                            } else if (currentTool == Tool::Brush && ev.mouseButton.button == sf::Mouse::Left) {
+                                // Paint on click (same as drag logic)
+                                sf::Vector2f local = world - origin; sf::Vector2f ij = isoUnprojectDyn(local, iso);
+                                int i0 = (int)std::floor(ij.x); int j0 = (int)std::floor(ij.y);
+                                int half = brush - 1;
+                                for (int di = -brush; di <= brush; ++di) {
+                                    for (int dj = -brush; dj <= brush; ++dj) {
+                                        int ci = i0 + di; int cj = j0 + dj;
+                                        if (std::max(std::abs(di), std::abs(dj)) > half) continue;
+                                        long long k = key64(ci, cj);
+                                        paintedCells[k] = activeColor;
+                                    }
+                                }
                             }
                         } else {
                             // Start tilting
@@ -820,10 +1086,30 @@ int main() {
                 case sf::Event::MouseButtonReleased:
                     if (ev.mouseButton.button == sf::Mouse::Middle) panning = false;
                     if (ev.mouseButton.button == sf::Mouse::Left || ev.mouseButton.button == sf::Mouse::Right) tilting = false;
+                    if (ev.mouseButton.button == sf::Mouse::Left) toneDragging = false;
                     brushDragging = false;
                     break;
                 case sf::Event::MouseMoved:
                     {
+                        // Tone slider drag update (screen space)
+                        if (toneDragging) {
+                            sf::Vector2i mp = sf::Mouse::getPosition(window);
+                            sf::Vector2f screen = window.mapPixelToCoords(mp, window.getDefaultView());
+                            float leftX = 16.f;
+                            float panelW = 140.f;
+                            float wheelTop = btnBake.getPosition().y + btnBake.getSize().y + 16.f;
+                            sf::Vector2f wheelCenter(leftX + panelW*0.5f, wheelTop + (float)colorWheelRadius);
+                            const int N = 5; float sw = 22.f, sh = 22.f, gap = 6.f;
+                            float totalW = N*sw + (N-1)*gap;
+                            float hx = leftX + (panelW - totalW) * 0.5f;
+                            float hy = wheelCenter.y + colorWheelRadius + 12.f; // history y
+                            const float toneH = 18.f; const float tonePad = 12.f;
+                            float toneY = hy + sh + tonePad;
+                            sf::FloatRect toneRect(leftX, toneY, panelW, toneH);
+                            float t = (screen.x - toneRect.left) / toneRect.width;
+                            colorToneT = std::clamp(t, 0.f, 1.f);
+                            activeColor = applyTone(selectedColor, colorToneT);
+                        }
                         // Update UI hover (screen space)
                         sf::Vector2i mp = sf::Mouse::getPosition(window);
                         sf::Vector2f screen = window.mapPixelToCoords(mp, window.getDefaultView());
@@ -837,7 +1123,7 @@ int main() {
                             brushSize = sliderPickValue(screen);
                         }
 
-                        // Paint while dragging (if not panning/tilting), throttled by paintTick
+                        // Edit/Paint while dragging (if not panning/tilting), throttled by paintTick
                         if (!panning && !tilting && !brushDragging && (sf::Mouse::isButtonPressed(sf::Mouse::Left) || sf::Mouse::isButtonPressed(sf::Mouse::Right))) {
                             if (paintClock.getElapsedTime() >= paintTick) {
                                 paintClock.restart();
@@ -846,14 +1132,15 @@ int main() {
                                     sf::Vector2i IJ = worldToGridIntersection(world);
                                     int brush = std::clamp(brushSize, brushMin, brushMax);
                                     bool ctrl = sf::Keyboard::isKeyPressed(sf::Keyboard::LControl) || sf::Keyboard::isKeyPressed(sf::Keyboard::RControl);
-                                    if (ctrl && flattenPrimed && sf::Mouse::isButtonPressed(sf::Mouse::Left)) {
+                                    if (currentTool == Tool::Bulldozer && ctrl && flattenPrimed && (sf::Mouse::isButtonPressed(sf::Mouse::Left) || sf::Mouse::isButtonPressed(sf::Mouse::Right))) {
                                         // Flatten to captured height while Ctrl is held
+                                        int half = brush - 1;
                                         for (int di = -brush; di <= brush; ++di) {
                                             for (int dj = -brush; dj <= brush; ++dj) {
                                                 int I = IJ.x + di;
                                                 int J = IJ.y + dj;
                                                 if (!proceduralMode) { if (I < 0 || J < 0 || I > cfg::GRID || J > cfg::GRID) continue; }
-                                                if (di*di + dj*dj > brush*brush) continue;
+                                                if (std::max(std::abs(di), std::abs(dj)) > half) continue;
                                                 if (proceduralMode) {
                                                     chunkMgr.applySetAt(I, J, flattenHeight);
                                                 } else {
@@ -861,14 +1148,15 @@ int main() {
                                                 }
                                             }
                                         }
-                                    } else {
+                                    } else if (currentTool == Tool::Bulldozer) {
                                         int delta = sf::Mouse::isButtonPressed(sf::Mouse::Left) ? 1 : -1;
+                                        int half = brush - 1;
                                         for (int di = -brush; di <= brush; ++di) {
                                             for (int dj = -brush; dj <= brush; ++dj) {
                                                 int I = IJ.x + di;
                                                 int J = IJ.y + dj;
                                                 if (!proceduralMode) { if (I < 0 || J < 0 || I > cfg::GRID || J > cfg::GRID) continue; }
-                                                if (di*di + dj*dj > brush*brush) continue;
+                                                if (std::max(std::abs(di), std::abs(dj)) > half) continue;
                                                 if (proceduralMode) {
                                                     if (waterOnly) {
                                                         // Start from sea (0) unless an override exists
@@ -890,6 +1178,32 @@ int main() {
                                                 } else {
                                                     heights[idx(I, J)] += delta;
                                                 }
+                                            }
+                                        }
+                                    } else if (currentTool == Tool::Brush && sf::Mouse::isButtonPressed(sf::Mouse::Left)) {
+                                        // Paint while dragging
+                                        sf::Vector2f local = world - origin; sf::Vector2f ij = isoUnprojectDyn(local, iso);
+                                        int i0 = (int)std::floor(ij.x); int j0 = (int)std::floor(ij.y);
+                                        int half = brush - 1;
+                                        for (int di = -brush; di <= brush; ++di) {
+                                            for (int dj = -brush; dj <= brush; ++dj) {
+                                                int ci = i0 + di; int cj = j0 + dj;
+                                                if (std::max(std::abs(di), std::abs(dj)) > half) continue;
+                                                long long k = key64(ci, cj);
+                                                paintedCells[k] = activeColor;
+                                            }
+                                        }
+                                    } else if (currentTool == Tool::Eraser && sf::Mouse::isButtonPressed(sf::Mouse::Left)) {
+                                        // Erase painted cells while dragging
+                                        sf::Vector2f local = world - origin; sf::Vector2f ij = isoUnprojectDyn(local, iso);
+                                        int i0 = (int)std::floor(ij.x); int j0 = (int)std::floor(ij.y);
+                                        int half = brush - 1;
+                                        for (int di = -brush; di <= brush; ++di) {
+                                            for (int dj = -brush; dj <= brush; ++dj) {
+                                                int ci = i0 + di; int cj = j0 + dj;
+                                                if (std::max(std::abs(di), std::abs(dj)) > half) continue;
+                                                long long k = key64(ci, cj);
+                                                paintedCells.erase(k);
                                             }
                                         }
                                     }
@@ -1002,7 +1316,34 @@ int main() {
         }
 
         window.clear(sf::Color::Black);
+        // Ensure world view is active before world rendering (avoid leaving default view from UI phase)
+        window.setView(view);
         // Wireframe-only view: do not draw filled tiles or interstices
+
+        // Build hover mask for current brush (Chebyshev square), available to all render calls below
+        std::unordered_set<long long> hoverMask;
+        if (showColorHover && currentTool == Tool::Brush) {
+            sf::Vector2i mp = sf::Mouse::getPosition(window);
+            sf::Vector2f world = window.mapPixelToCoords(mp, view);
+            if (pointInsideGrid(world)) {
+                sf::Vector2f ij = isoUnprojectDyn(world - origin, iso);
+                int i0 = (int)std::floor(ij.x);
+                int j0 = (int)std::floor(ij.y);
+                int brush = std::clamp(brushSize, brushMin, brushMax);
+                int half = brush - 1;
+                for (int di = -brush; di <= brush; ++di) {
+                    for (int dj = -brush; dj <= brush; ++dj) {
+                        if (std::max(std::abs(di), std::abs(dj)) > half) continue;
+                        int ci = i0 + di;
+                        int cj = j0 + dj;
+                        if (!proceduralMode) {
+                            if (ci < 0 || cj < 0 || ci >= cfg::GRID || cj >= cfg::GRID) continue;
+                        }
+                        hoverMask.insert(key64(ci, cj));
+                    }
+                }
+            }
+        }
 
         if (proceduralMode) {
             // Per-chunk rendering with culling based on view rectangle unprojected to grid space
@@ -1075,14 +1416,19 @@ int main() {
                             int v = 0;
                             // Only show explicit edits; ignore generated terrain
                             if (k < ch.overrideMask.size() && ch.overrideMask[k]) v = ch.overrides[k];
-                            waterBuf[k] = std::max(0, v);
+                            // Keep full range so digging (<0) is visible as deeper water
+                            waterBuf[k] = std::clamp(v, cfg::MIN_ELEV, cfg::MAX_ELEV);
                         }
                         auto cMap2d = render::buildProjectedMapChunk(waterBuf, cfg::CHUNK_SIZE, I0, J0, iso, origin, 1.0f);
-                        render::draw2DFilledCellsChunk(window, cMap2d, waterBuf, cfg::CHUNK_SIZE, shadowsEnabled, 1.0f);
+                        render::draw2DFilledCellsChunk(window, cMap2d, waterBuf, cfg::CHUNK_SIZE, shadowsEnabled, 1.0f, I0, J0, &paintedCells,
+                                                       (showColorHover && currentTool == Tool::Brush) ? &hoverMask : nullptr,
+                                                       (showColorHover && currentTool == Tool::Brush) ? &activeColor : nullptr);
                         if (showGrid) render::draw2DMapChunk(window, cMap2d);
                     } else {
                         auto cMap2d = render::buildProjectedMapChunk(ch.heights, cfg::CHUNK_SIZE, I0, J0, iso, origin, 1.0f);
-                        render::draw2DFilledCellsChunk(window, cMap2d, ch.heights, cfg::CHUNK_SIZE, shadowsEnabled, 1.0f);
+                        render::draw2DFilledCellsChunk(window, cMap2d, ch.heights, cfg::CHUNK_SIZE, shadowsEnabled, 1.0f, I0, J0, &paintedCells,
+                                                       (showColorHover && currentTool == Tool::Brush) ? &hoverMask : nullptr,
+                                                       (showColorHover && currentTool == Tool::Brush) ? &activeColor : nullptr);
                         if (showGrid) render::draw2DMapChunk(window, cMap2d);
                     }
                 }
@@ -1090,9 +1436,12 @@ int main() {
         } else {
             // Non-procedural path: use global heights buffer
             auto map2d = render::buildProjectedMap(heights, iso, origin, 1.0f);
-            render::draw2DFilledCells(window, map2d, heights, shadowsEnabled, 1.0f);
+            render::draw2DFilledCells(window, map2d, heights, shadowsEnabled, 1.0f, &paintedCells, 
+                                      (showColorHover && currentTool == Tool::Brush) ? &hoverMask : nullptr,
+                                      (showColorHover && currentTool == Tool::Brush) ? &activeColor : nullptr);
             if (showGrid) render::draw2DMap(window, map2d);
         }
+
 
         // Draw UI in screen space (default view)
         sf::View oldView = window.getView();
@@ -1188,7 +1537,9 @@ int main() {
             helpF11.setPosition(16.f, baseY - 20.f);
             helpCtrl.setPosition(16.f, baseY);
             window.draw(helpF11);
-            window.draw(helpCtrl);
+            if (currentTool == Tool::Bulldozer) {
+                window.draw(helpCtrl);
+            }
         }
 
         // Import/Export buttons rendering (top-right)
@@ -1264,6 +1615,47 @@ int main() {
 
         // (height slider removed)
 
+        // Inventory toolbar (bottom-center) rendering
+        {
+            auto [rBulldozer, rBrush, rEraser] = inventoryRects();
+            // Background bar spans all three
+            float pad = 8.f;
+            float left = std::min(rBulldozer.left, std::min(rBrush.left, rEraser.left));
+            float right = std::max(rBulldozer.left + rBulldozer.width, std::max(rBrush.left + rBrush.width, rEraser.left + rEraser.width));
+            float top = std::min(rBulldozer.top, std::min(rBrush.top, rEraser.top));
+            float height = rBulldozer.height;
+            sf::FloatRect barRect(left - pad, top - pad, (right - left) + pad*2.f, height + pad*2.f);
+            sf::RectangleShape bar(sf::Vector2f(barRect.width, barRect.height));
+            bar.setPosition(barRect.left, barRect.top);
+            bar.setFillColor(sf::Color(20,20,20,200));
+            bar.setOutlineThickness(1.f);
+            bar.setOutlineColor(sf::Color(200,200,200));
+            window.draw(bar);
+
+            // Draw slots
+            auto drawSlot = [&](const sf::FloatRect& r, const sf::Sprite& icon, bool selected){
+                sf::RectangleShape box(sf::Vector2f(r.width, r.height));
+                box.setPosition(r.left, r.top);
+                box.setFillColor(sf::Color(40,40,40,220));
+                box.setOutlineThickness(selected ? 2.f : 1.f);
+                box.setOutlineColor(selected ? sf::Color(100,180,255) : sf::Color(150,150,150));
+                window.draw(box);
+                if (icon.getTexture()) {
+                    sf::Sprite s(icon);
+                    sf::FloatRect lb = s.getLocalBounds();
+                    s.setOrigin(lb.left + lb.width*0.5f, lb.top + lb.height*0.5f);
+                    s.setPosition(r.left + r.width*0.5f, r.top + r.height*0.5f);
+                    window.draw(s);
+                }
+            };
+            drawSlot(rBulldozer, sprBulldozer, currentTool == Tool::Bulldozer);
+            drawSlot(rBrush,      sprBrush,      currentTool == Tool::Brush);
+            drawSlot(rEraser,     sprEraser,     currentTool == Tool::Eraser);
+
+            // Update hover flag for brush color hover each frame
+            showColorHover = (currentTool == Tool::Brush);
+        }
+
         // Brush slider (right side)
         sf::FloatRect tr = sliderTrackRect();
         sf::RectangleShape track(sf::Vector2f(tr.width, tr.height));
@@ -1298,7 +1690,71 @@ int main() {
             val.setPosition(tr.left - 6.f, tr.top + tr.height + 6.f);
             window.draw(val);
         }
+        // Draw color picker and history (screen space) only for Brush tool
+        if (currentTool == Tool::Brush) {
+            ensureColorWheel();
+            float leftX = 16.f;
+            float panelW = 140.f;
+            float wheelTop = btnBake.getPosition().y + btnBake.getSize().y + 16.f;
+            sf::Vector2f wheelCenter(leftX + panelW*0.5f, wheelTop + (float)colorWheelRadius);
+            // Background panel
+            sf::RectangleShape cpBG(sf::Vector2f(panelW, colorWheelRadius*2.f + 56.f + 34.f));
+            cpBG.setPosition(leftX, wheelTop);
+            cpBG.setFillColor(sf::Color(30,30,30,200));
+            cpBG.setOutlineThickness(1.f);
+            cpBG.setOutlineColor(sf::Color(200,200,200));
+            window.draw(cpBG);
+            // Wheel sprite
+            colorWheelSpr.setPosition(wheelCenter.x - colorWheelRadius, wheelCenter.y - colorWheelRadius);
+            window.draw(colorWheelSpr);
+            // Selected color indicator at center
+            sf::CircleShape dot(6.f);
+            dot.setOrigin(6.f,6.f);
+            dot.setPosition(wheelCenter);
+            // Display activeColor (after tone) as the selected indicator
+            dot.setFillColor(activeColor);
+            dot.setOutlineThickness(2.f);
+            dot.setOutlineColor(sf::Color::Black);
+            window.draw(dot);
+            // History swatches
+            const int N = 5; float sw = 22.f, sh = 22.f, gap = 6.f;
+            float totalW = N*sw + (N-1)*gap;
+            float hx = leftX + (panelW - totalW) * 0.5f;
+            float hy = wheelTop + colorWheelRadius*2.f + 12.f;
+            for (int i=0; i<N; ++i) {
+                sf::RectangleShape sq(sf::Vector2f(sw, sh));
+                sq.setPosition(hx + i*(sw+gap), hy);
+                if (i < (int)colorHistory.size()) sq.setFillColor(colorHistory[i]);
+                else sq.setFillColor(sf::Color(80,80,80));
+                sq.setOutlineThickness(1.f);
+                sq.setOutlineColor(sf::Color::Black);
+                window.draw(sq);
+            }
+            // Tone slider
+            if (!toneTexReady) rebuildToneTex();
+            const float toneH = 18.f; const float tonePad = 12.f;
+            float toneY = hy + sh + tonePad;
+            // Border/background
+            sf::RectangleShape toneBG(sf::Vector2f(panelW, toneH));
+            toneBG.setPosition(leftX, toneY);
+            toneBG.setFillColor(sf::Color(50,50,50,220));
+            toneBG.setOutlineThickness(1.f);
+            toneBG.setOutlineColor(sf::Color(200,200,200));
+            window.draw(toneBG);
+            // Gradient sprite scaled to fit
+            toneSpr.setPosition(leftX, toneY + 0.5f);
+            toneSpr.setScale(panelW / (float)toneTex.getSize().x, (toneH-1.f) / std::max(1.f, (float)toneTex.getSize().y));
+            window.draw(toneSpr);
+            // Handle marker
+            float handleX = leftX + colorToneT * panelW;
+            sf::RectangleShape handle(sf::Vector2f(2.f, toneH));
+            handle.setPosition(handleX - 1.f, toneY);
+            handle.setFillColor(sf::Color::White);
+            window.draw(handle);
+        }
         window.setView(oldView);
+
+        // No separate overlay: hover highlighting is applied directly in renderers via hoverMask
 
         window.display();
     }
