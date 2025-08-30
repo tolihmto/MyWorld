@@ -7,6 +7,16 @@
 #include <sstream>
 
 static inline int clampi(int v, int lo, int hi) { return std::max(lo, std::min(hi, v)); }
+
+void ChunkManager::saveAllDirty() {
+    for (auto& kv : _cache) {
+        Entry& e = kv.second;
+        if (e.dirty) {
+            saveOverrides(e.ch, kv.first.cx, kv.first.cy);
+            e.dirty = false;
+        }
+    }
+}
 static inline int floorDiv(int a, int b) { return (a >= 0) ? (a / b) : ((a - (b - 1)) / b); }
 
 using std::string;

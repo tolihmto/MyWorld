@@ -66,6 +66,9 @@ public:
     // - Clears in-memory overrides and cache WITHOUT saving
     void resetOverrides();
 
+    // Persist all dirty chunks to disk without clearing the cache
+    void saveAllDirty();
+
 private:
     Mode _mode;
     uint32_t _seed;

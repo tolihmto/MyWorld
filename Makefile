@@ -15,7 +15,15 @@ ifeq ($(OS),Windows_NT)
   MKDIR_BIN   = if not exist "$(BIN_DIR)"   mkdir "$(BIN_DIR)"
   RMDIR_BUILD = if exist "$(BUILD_DIR)" rmdir /S /Q "$(BUILD_DIR)"
   RMDIR_BIN   = if exist "$(BIN_DIR)"   rmdir /S /Q "$(BIN_DIR)"
-  CXX := g++
+  # Optional: user can force a specific MinGW toolchain root (Option A)
+  # Example: MINGW_ROOT=C:/WinLibs-14.1.0posix-seh-ucrt/mingw64
+  # When set, we use its g++ and bin directory for runtime DLLs
+  MINGW_ROOT ?=
+  ifneq ($(MINGW_ROOT),)
+    CXX := $(MINGW_ROOT)/bin/g++.exe
+  else
+    CXX := g++
+  endif
   # Ensure GNU make uses cmd.exe on Windows so batch IF works
   SHELL := cmd
   .SHELLFLAGS := /C
@@ -33,11 +41,14 @@ ifeq ($(OS),Windows_NT)
   SFML_INC ?=
   SFML_LIB ?=
   # Derive include/lib from SFML_DIR if provided
+  # Try to determine SFML include/lib/bin
+  # 1) Respect explicitly provided SFML_DIR (Option B preferred)
   ifneq ($(SFML_DIR),)
     SFML_INC := $(SFML_DIR)/include
     SFML_LIB := $(SFML_DIR)/lib
+    SFML_BIN := $(SFML_DIR)/bin
   endif
-  # Autodetect common prebuilt SFML path if not provided
+  # 2) Fallback to common prebuilt SFML path (Option B)
   ifeq ($(SFML_INC),)
     ifneq (,$(wildcard C:/SFML-2.6.1/include))
       SFML_INC := C:/SFML-2.6.1/include
@@ -48,6 +59,12 @@ ifeq ($(OS),Windows_NT)
       SFML_LIB := C:/SFML-2.6.1/lib
     endif
   endif
+  ifeq ($(SFML_BIN),)
+    ifneq (,$(wildcard C:/SFML-2.6.1/bin))
+      SFML_BIN := C:/SFML-2.6.1/bin
+    endif
+  endif
+  # 3) Only if still unset, and user wants MSYS2, they can set SFML_DIR=C:/msys64/mingw64 manually
   # Add include/lib paths if set
   ifneq ($(SFML_INC),)
     CXXFLAGS += -I"$(SFML_INC)"
@@ -56,32 +73,54 @@ ifeq ($(OS),Windows_NT)
     LDFLAGS  += -L"$(SFML_LIB)"
   endif
 
-  # Try to determine SFML bin (for runtime PATH)
-  ifneq ($(SFML_DIR),)
-    SFML_BIN := $(SFML_DIR)/bin
-  endif
-  ifeq ($(SFML_BIN),)
-    # Common prebuilt path fallback
-    ifneq (,$(wildcard C:/SFML-2.6.1/bin))
-      SFML_BIN := C:/SFML-2.6.1/bin
-    endif
-  endif
+  # Link libstdc++ and libgcc statically to minimize runtime DLL ABI mismatches
+  LDFLAGS += -static-libstdc++ -static-libgcc
 
-  # Try to detect MSYS2 MinGW runtime bin for GCC DLLs (libstdc++-6.dll, libwinpthread-1.dll, etc.)
-  ifeq ($(MINGW_BIN),)
-    ifneq (,$(wildcard C:/msys64/mingw64/bin))
-      MINGW_BIN := C:/msys64/mingw64/bin
-    endif
-  endif
+  # Do not auto-detect MSYS2 for runtime in Option B (avoid mixing toolchains)
+  MINGW_BIN :=
   
 
   # Print what we detected (helps diagnose if -L is missing)
   $(info SFML_INC=$(SFML_INC))
   $(info SFML_LIB=$(SFML_LIB))
   $(info SFML_BIN=$(SFML_BIN))
+  $(info MINGW_BIN=$(MINGW_BIN))
+  # Show which g++ Make finds on PATH (or from MINGW_ROOT)
+  ifneq ($(MINGW_ROOT),)
+    CXX_EXE := $(abspath $(MINGW_ROOT)/bin/g++.exe)
+  else
+    CXX_EXE := $(shell where g++ 2>nul)
+  endif
+  $(info CXX_EXE=$(CXX_EXE))
+  # Derive MinGW bin from detected g++ (first match)
+  MINGW_BIN_AUTO := $(patsubst %\\,%,$(dir $(firstword $(CXX_EXE))))
+  $(info MINGW_BIN_AUTO=$(MINGW_BIN_AUTO))
+  # For Windows cmd.exe copy commands, use backslashes to avoid option parsing issues
+  MINGW_BIN_WIN := $(subst /,\\,$(MINGW_BIN_AUTO))
 
+  # Decide whether to link SFML debug or release libraries based on available DLLs
+  # If only debug DLLs exist in SFML_BIN, use -d suffix
+  SFML_DBG_SUFFIX :=
+  ifneq (,$(SFML_BIN))
+    ifeq (,$(wildcard $(SFML_BIN)/sfml-graphics-2.dll))
+      ifneq (,$(wildcard $(SFML_BIN)/sfml-graphics-d-2.dll))
+        SFML_DBG_SUFFIX := -d
+      endif
+    endif
+  endif
+  $(info SFML_DBG_SUFFIX=$(SFML_DBG_SUFFIX))
   # Link SFML (MinGW build of SFML required) + comdlg32 for file dialogs
-  LDLIBS := -lsfml-graphics -lsfml-window -lsfml-system -lcomdlg32
+  LDLIBS := -lsfml-graphics$(SFML_DBG_SUFFIX) -lsfml-window$(SFML_DBG_SUFFIX) -lsfml-system$(SFML_DBG_SUFFIX) -lcomdlg32
+
+  # Compute the list of SFML DLLs to copy during packaging based on suffix
+  DLL_SFX := $(SFML_DBG_SUFFIX)
+  SFML_CORE_DLLS := \
+    sfml-graphics$(DLL_SFX)-2.dll \
+    sfml-window$(DLL_SFX)-2.dll \
+    sfml-system$(DLL_SFX)-2.dll \
+    sfml-audio$(DLL_SFX)-2.dll \
+    sfml-network$(DLL_SFX)-2.dll
+  SFML_EXT_DLLS := openal32.dll freetype6.dll libpng16-16.dll brotlicommon.dll brotlidec.dll zlib1.dll
 
   # Pre-link command on Windows to ensure previous exe is removed
   PRELINK := del /F /Q "$(BIN_DIR)\\game$(EXE)" 2>nul || exit /B 0

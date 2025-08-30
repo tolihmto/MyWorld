@@ -3,12 +3,14 @@
 namespace cfg {
     // Chunked world configuration
     constexpr int CHUNK_SIZE = 60;           // tiles per chunk side (chunk grid is (CHUNK_SIZE+1)^2 vertices)
-    constexpr int MAX_CACHED_CHUNKS = 121;   // simple LRU budget (e.g., 11x11 visible)
+    constexpr int MAX_CACHED_CHUNKS = 1000;  // simple LRU budget (e.g., 11x11 visible)
 
-    constexpr int GRID = 300;                // 300 tiles per side
+    // Reference tile count used for fixed-size, non-procedural buffers and noise normalization.
+    // Not a world bound: the procedural world is infinite via chunk streaming.
+    constexpr int GRID = 300;
     constexpr float TILE_W = 32.f;           // visual diamond width in pixels
     constexpr float TILE_H = 16.f;           // visual diamond height in pixels (smaller to yield diamond look)
-    constexpr float ELEV_STEP = 6.f;         // pixel offset per height unit (slightly less dramatic elevation)
+    constexpr float ELEV_STEP = 6.f;         // pixel offset per height unit (reduced for finer per-click steps)
     // Expanded range for impressive peaks and depths
     constexpr int MAX_ELEV = 256;            // much higher cap to avoid plateau
     constexpr int MIN_ELEV = -64;            // deeper valleys allowed
