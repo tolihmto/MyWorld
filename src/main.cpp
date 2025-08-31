@@ -18,6 +18,7 @@
 #include <ctime>
 #include <cstring>
 #include <functional>
+#include <cctype>
 #ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX 1
@@ -31,6 +32,14 @@
 #include "render.hpp"
 #include "chunks.hpp"
 #include "zip.hpp"
+
+// Small string trim helper for Unix shell outputs
+static inline std::string trim(const std::string& s) {
+    size_t b = 0, e = s.size();
+    while (b < e && std::isspace(static_cast<unsigned char>(s[b]))) ++b;
+    while (e > b && std::isspace(static_cast<unsigned char>(s[e - 1]))) --e;
+    return s.substr(b, e - b);
+}
 
 // MyWorld - Isometric diamond tiles with elevation editing, camera pan+zoom
 // Grid: 20x20 tiles, each isometric tile nominal size 32x32 (diamond)

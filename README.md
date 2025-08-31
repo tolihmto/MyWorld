@@ -4,12 +4,12 @@ Un éditeur/visualiseur de terrain isométrique en C++/SFML.
 
 - Rendu isométrique avec ombres optionnelles et shading par normale.
 - Édition de la carte par brosse (hausse/baisse/plat).
-- Import/export CSV progressif (non-bloquant).
+- Import/export ZIP (monde) et CSV (legacy), import progressif (non-bloquant).
 - UI simple: boutons Générer, Grille, Import/Export.
 
 ## Structure du projet
 
-- `src/main.cpp` — boucle principale, UI, entrées clavier/souris, import/export CSV.
+- `src/main.cpp` — boucle principale, UI, entrées clavier/souris, import/export ZIP/CSV.
 - `src/render.cpp`, `src/render.hpp` — projection 2D, wireframe, remplissage des cellules, shading/ombres.
 - `src/iso.cpp`, `src/iso.hpp` — projection/déprojection isométrique paramétrable (`IsoParams`).
 - `src/terrain.cpp` — génération procédurale (`terrain::generateMap`).
@@ -32,15 +32,34 @@ Ajustez les variables en haut du `Makefile` si vos chemins diffèrent, ou export
 
 ## Construire et lancer
 
-Windows (par défaut du projet):
+### Windows (MSYS2 MinGW-w64)
 
-```bat
-make rebuild
-make run
+- Ouvrir le terminal **MSYS2 MinGW64** (icône "MSYS2 MinGW 64-bit").
+- Installer les paquets nécessaires:
+
+```sh
+pacman -S --needed \
+  mingw-w64-x86_64-gcc \
+  mingw-w64-x86_64-make \
+  mingw-w64-x86_64-sfml
+```
+
+Notes:
+- Le Makefile utilise le compilateur de MSYS2: `C:\msys64\mingw64\bin\g++.exe`.
+- Par défaut, `SFML_DIR` pointe vers `C:\SFML-2.6.1` (SDK SFML Windows). Vous pouvez le laisser ainsi ou l’ajuster si besoin.
+
+Commande de build et d’exécution (séquence idéale):
+
+```sh
+mingw32-make clean
+mingw32-make rebuild
+mingw32-make package
+mingw32-make run
 ```
 
 - `rebuild` nettoie et recompile dans `build/`, lie vers `bin/game.exe`.
-- `run` ajoute `SFML_BIN` et `MINGW_BIN` au PATH et lance `bin/game.exe`.
+- `package` copie les DLLs nécessaires dans `bin/`.
+- `run` lance `bin/game.exe` depuis `bin/`.
 
 Unix (Linux/macOS avec SFML installé):
 
@@ -76,6 +95,36 @@ make run
   - Champ "Seed": cliquer puis saisir un entier, valider avec Entrée pour appliquer le seed.
 
 Note: Un mode "aplatissement" de la brosse est disponible dans le code (plat à une hauteur cible) et s’active depuis l’UI; il agit sur la zone circulaire de la brosse.
+
+## Import/Export ZIP (archive de monde)
+
+- __Vue d’ensemble__
+  - Import/export d’un monde complet sous forme d’archive `.zip`.
+  - Les JSON sont optionnels (fallbacks gérés), les CSV des chunks sont extraits sur disque.
+- __Structure de l’archive__
+  - `world.json` — métadonnées:
+    - `app` (string), `format` (int, version actuelle 2)
+    - `seed` (int), `continents` (bool), `procedural` (bool), `water_only` (bool)
+    - `saved_at` (string)
+  - `painted.json` — couleurs de peinture par cellule:
+    - `{ "cells": [ {"I":int, "J":int, "r":0..255, "g":..., "b":..., "a":...}, ... ] }`
+  - `markers.json` — marqueurs utilisateur:
+    - `{ "markers": [ {"I":int, "J":int, "label":"...", "r":..., "g":..., "b":..., "a":..., "icon":"..."}, ... ] }`
+  - `colors.json` — historique de couleurs récentes:
+    - `{ "colors": [ {"r":..., "g":..., "b":..., "a":...}, ... ] }` (jusqu’à 5)
+  - `maps/seed_<seed>[_cont]/.../*.csv` — chunks exportés (fichiers CSV bruts)
+- __Comportement à l’import__
+  - Réinitialise l’état d’édition (peinture, marqueurs, overrides de chunks).
+  - Lit `world.json` (si absent: conserve seed/mode actuels).
+  - Lit `painted.json`, `markers.json`, `colors.json` si présents, sinon nettoie ces états.
+  - Extrait tous les `maps/*.csv` sur disque (crée les dossiers si besoin), écrase les fichiers existants.
+- __Comportement à l’export__
+  - Sauvegarde d’abord tous les chunks modifiés.
+  - Écrit `world.json` (format=2) + `painted.json` + `markers.json` + `colors.json`.
+  - Ajoute tous les CSV déjà présents sous `maps/seed_<seed>[_cont]/` (récursif).
+- __Notes__
+  - Les fichiers dans l’archive sont stockés sans compression (stockage direct) pour la simplicité et la rapidité.
+  - Les chemins sont sensibles à la casse et utilisent des `/` (style POSIX) dans l’archive.
 
 ## Import/Export CSV
 
